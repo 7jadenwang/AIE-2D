@@ -1,0 +1,30 @@
+/.claude
+/.codex
+/.vscode
+/20mW_L_shape_forTEMPO_0,1,5mM
+/AIE Reproduce.py
+/AIE _Tim.py
+/circle.png
+/circles_TEMPO_10,15,20,25mW_0,1,5mM
+/c_arr.png
+/data
+/forJadenfiles.zip
+/From_Scratch
+/Inhibition_Energy Fitter.ipynb
+/inhibition_time_vs_intensity.png
+/intensityOptimizer_accum.py
+/Lshape.png
+/New Model Test_2026_05_22
+/Note
+/optc.png
+/optl.png
+/optl_Swiss.png
+/output
+/PROJECT_SUMMARY.md
+/ssim.ipynb
+/Swiss.py
+/test_repro
+/test_repro_no_LS
+/test_repro_optl
+/Untitled-1.ipynb
+/__pycache__
