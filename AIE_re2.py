@@ -22,10 +22,11 @@ device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Working Device:',device)
 
 
+
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
-    firstLoss = torch.linalg.matrix_norm(firstDoC - 0.0* target,'fro')
-    intermediateLoss = torch.linalg.matrix_norm(intermediateDoC - 0.77 * target,'fro')
-    finalLoss = torch.linalg.matrix_norm(finalDoC - 0.91 * target,'fro')
+    firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
+    intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
+    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.91 * target),'fro')
     #FinalLoss=F.mse_loss(finalDoC, target)
     #return FinalLoss
     return firstLoss + intermediateLoss + finalLoss #+ FinalLoss
@@ -94,7 +95,7 @@ intensity=20 #mW/cm2
 #Change intensity with different data pls
 dt=float(0.1) #s, time step
 #0.2 for 5fps
-total_steps=int(18/dt)
+total_steps=int(31/dt)
 tstepT0 = int(1.0 / dt) # only for loss and optimization.
 tstepT1 = int(14.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
 tstepT2 = int(16.5 / dt) # But need to change with DoC profile with distinct intensity
@@ -115,7 +116,7 @@ Totalinhibtion=89.8478
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition) 
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./optl_Swiss.png')
+img=Image.open('./Lshape.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
 # Dont convert to mode L to decrease the bit level
@@ -128,8 +129,8 @@ elif img.mode == 'L': #8-bit
 else: #RGB/RGBA
     target=np.asarray(img.convert('L'))
     max_val=255
-target=(target/max_val).astype(np.float32)
-#target=(target/255).astype(np.float32) # convert to float32 for processing
+target=(target/max_val).astype(np.float32) #Normalize to [0,1]
+
 #plt.imshow(target,cmap='gray')
 #plt.show()
 
@@ -188,11 +189,12 @@ for epoch in range(numEpochs):
     opt_mask_pre=opt_mask.unsqueeze(0).unsqueeze(0)
     opt_mask_padded=F.pad(opt_mask_pre,pad=(ls_pad,ls_pad,ls_pad,ls_pad),mode='reflect')
     blur_mask=F.conv2d(opt_mask_padded,ls)[0,0]
-    #blur_mask=opt_mask # for optimization without scattering
+    blur_mask=opt_mask # for optimization without scattering
     
-
-    #plt.imshow(blur_mask.detach().cpu().numpy(),cmap='gray')
-    #plt.show()
+    if numEpochs == 1:
+        plt.imshow(blur_mask.detach().cpu().numpy(),cmap='gray')
+        plt.show()
+        print(blur_mask[H//2,W//2].item())
     O2=[(torch.ones((H,W))*(O2inhibition)).to(torch.float32).to(device)]
     TEMPO=[(torch.ones((H,W))*(TEMPOinhibition)).to(torch.float32).to(device)]
     Dose=[torch.zeros((H,W)).to(torch.float32).to(device)]
@@ -298,6 +300,8 @@ for epoch in range(numEpochs):
     optimizer.step()
     opt_mask.data.clamp_(0,255)
 
+
+#opt_mask.data range from o to 255
 plt.figure()
 plt.plot(np.arange(len(loss_history)),loss_history)
 plt.savefig(os.path.join(folder_name,'aaa_loss_history.png'))
