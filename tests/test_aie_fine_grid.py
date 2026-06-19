@@ -1,7 +1,19 @@
+from pathlib import Path
+
 import pytest
 import torch
 
 from aie_fine_grid import expand_projector_mask, initialize_projector_mask
+
+
+def test_fine_grid_script_preserves_projector_grid_and_expands_before_physics():
+    source = Path("AIE_re2.1.py").read_text(encoding="utf-8")
+    assert "PROJECTOR_SHAPE = (300, 300)" in source
+    assert "REFINEMENT = 2" in source
+    assert "PROJECTOR_PITCH = 7.395e-6" in source
+    assert "dx = dy = PROJECTOR_PITCH / REFINEMENT" in source
+    assert "initialize_projector_mask(target_mask, PROJECTOR_SHAPE, REFINEMENT)" in source
+    assert "expand_projector_mask(opt_mask, REFINEMENT)" in source
 
 
 def test_initialize_projector_mask_averages_refinement_block():
