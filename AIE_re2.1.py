@@ -90,11 +90,11 @@ dx = dy = PROJECTOR_PITCH / REFINEMENT
 dfsvty=float(2000e-12) #m2^2/s 2000um2/s
 #dfsvty=float(200e-12) #O2 concentration-dependent
 TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
-# TEMPO_dfsvty unknown, it should be small. 
-# PROBLEM: CANNOT be too small to create Gaussian kernel? 
+# TEMPO_dfsvty unknown, it should be small.
+# PROBLEM: CANNOT be too small to create Gaussian kernel?
 # What if it is smaller than 1 pixel?
 
-intensity=20 #mW/cm2 
+intensity=20 #mW/cm2
 #Change intensity with different data pls
 dt=float(0.1) #s, time step
 #0.2 for 5fps
@@ -103,7 +103,7 @@ tstepT0 = int(1.0 / dt) # only for loss and optimization.
 tstepT1 = int(14.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
 tstepT2 = int(16.5 / dt)  # But need to change with DoC profile with distinct intensity
 
-#O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
+#O2inhibition=O2_inhibition_time * intensity #mJ/cm2
 O2inhibition=20.0538
 # 0 for no O2 inhibition
 #10.452 for 0mmol TEMPO concentration O2 only
@@ -116,14 +116,14 @@ Totalinhibtion=89.8478
 
 #TEMPO_inibition_Time=Total_inhibition_time - O2_inhibition_time
 #TEMPOinhibition=TEMPO_inibition_Time * intensity #mJ/cm2
-TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition) 
+TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
 # AIE_TARGET_PATH selects another native 600x600 target.
 TARGET_PATH = os.environ.get("AIE_TARGET_PATH", "./Lshape600.png")
 img = Image.open(TARGET_PATH)
 print(f'Image mode:{img.mode}')
-# now the target is 16-bit. 
+# now the target is 16-bit.
 # Dont convert to mode L to decrease the bit level
 if img.mode == 'I;16': #16-bit
     target=np.asarray(img)
@@ -196,7 +196,7 @@ for epoch in range(numEpochs):
     opt_mask_padded=F.pad(opt_mask_pre,pad=(ls_pad,ls_pad,ls_pad,ls_pad),mode='reflect')
     blur_mask=F.conv2d(opt_mask_padded,ls)[0,0]
     #blur_mask=fine_mask # for optimization without scattering
-    
+
     if numEpochs == 1:
         plt.imshow(blur_mask.detach().cpu().numpy(),cmap='gray')
         plt.show()
@@ -228,22 +228,22 @@ for epoch in range(numEpochs):
         #TEMPO_diffused=TEMPO[-1] #For local TEMPO with no diffusion
 
         energy=(blur_mask.clamp(min=1e-12)/255)*intensity*dt
-        
+
         O2next=torch.clamp(O2_diffused-energy, min=0)
         O2.append(O2next)
         TEMPOnext=torch.where(O2next<=0, torch.clamp(TEMPO_diffused-energy, min=0), TEMPO_diffused)
         TEMPO.append(TEMPOnext)
         #print(step) if O2next.min()<=0 else None
-        
+
         # Tim_accmulation_Method
         Dosenext = torch.where((O2next<=0) & (TEMPOnext<=0), Dose[-1]+energy-O2_diffused-TEMPO_diffused, Dose[-1])
         Dose.append(Dosenext)
         t=Dosenext/(blur_mask.clamp(min=1e-12)/255*intensity)
-    
+
         #DoCnext= 1-torch.exp(-B*(t-C).clamp(min=0))
         DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(-(B*t).clamp(min=0)), DoC[-1])
         #DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(B*(-t)), DoC[-1])
-        
+
         '''
         # Jaden_Step_accumulation_Method (at most 1 step error)
         #DoCnext=torch.where((O2next > 0), DoC[-1], 1-(1-DoC[-1])*torch.exp(-A*dt)) # just for O2-only
@@ -288,7 +288,7 @@ for epoch in range(numEpochs):
 
 
 
-   
+
     #Loss=foregroundWeightedBCELoss(DoC[tstepT2], target=(target_mask/255)).to(device)
     #Loss=cornerWeightedShapeLoss(DoC[tstepT2], target=(target_mask/255)).to(device)
     #Loss=foregroundSSIMCuringLoss(DoC[tstepT2], target=(target_mask/255)).to(device)
@@ -297,8 +297,8 @@ for epoch in range(numEpochs):
     #Loss=1-SML
     if epoch % 100 == 0:
         print(f'Epoch {epoch}, Loss: {Loss.item():.4f}, Time per epoch: {T.time()-tic:.4f} seconds')
-        
-        
+
+
     loss_history.append(Loss.item())
     if numEpochs == 1: continue  # simulation-only: skip optimization
     optimizer.zero_grad()
