@@ -16,6 +16,8 @@ def initialize_projector_mask(
 ) -> torch.Tensor:
     """Initialize each projector pixel from its fine-grid block average."""
     _validate_2d(target, "target")
+    if refinement < 1:
+        raise ValueError("refinement must be at least 1")
     expected = tuple(size * refinement for size in projector_shape)
     if tuple(target.shape) != expected:
         raise ValueError(f"expected target shape {expected}, got {tuple(target.shape)}")

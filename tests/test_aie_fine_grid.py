@@ -46,3 +46,25 @@ def test_initialize_projector_mask_rejects_wrong_target_shape():
 
     with pytest.raises(ValueError, match="expected target shape"):
         initialize_projector_mask(target, projector_shape=(300, 300), refinement=2)
+
+
+def test_initialize_projector_mask_rejects_non_2d_target():
+    with pytest.raises(ValueError, match="must be 2D"):
+        initialize_projector_mask(torch.zeros(1, 2, 2), projector_shape=(1, 1))
+
+
+def test_expand_projector_mask_rejects_non_2d_mask():
+    with pytest.raises(ValueError, match="must be 2D"):
+        expand_projector_mask(torch.zeros(1, 2, 2))
+
+
+def test_initialize_projector_mask_rejects_non_positive_refinement():
+    with pytest.raises(ValueError, match="refinement must be at least 1"):
+        initialize_projector_mask(
+            torch.zeros(2, 2), projector_shape=(1, 1), refinement=0
+        )
+
+
+def test_expand_projector_mask_rejects_non_positive_refinement():
+    with pytest.raises(ValueError, match="refinement must be at least 1"):
+        expand_projector_mask(torch.zeros(1, 1), refinement=0)
