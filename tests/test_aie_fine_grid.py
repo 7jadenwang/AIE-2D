@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from aie_fine_grid import expand_projector_mask, initialize_projector_mask
 
@@ -14,6 +15,28 @@ def test_fine_grid_script_preserves_projector_grid_and_expands_before_physics():
     assert "dx = dy = PROJECTOR_PITCH / REFINEMENT" in source
     assert "initialize_projector_mask(target_mask, PROJECTOR_SHAPE, REFINEMENT)" in source
     assert "expand_projector_mask(opt_mask, REFINEMENT)" in source
+    assert 'TARGET_PATH = os.environ.get("AIE_TARGET_PATH", "./Lshape600.png")' in source
+    assert "img = Image.open(TARGET_PATH)" in source
+
+
+def test_fine_grid_optimization_smoke_preserves_shapes_and_gradients():
+    target = torch.zeros(600, 600)
+    target[150:450, 200:400] = 1.0
+    projector = torch.nn.Parameter(initialize_projector_mask(target))
+
+    expanded = expand_projector_mask(projector)
+    diagnostic = F.avg_pool2d(
+        expanded.unsqueeze(0).unsqueeze(0), kernel_size=3, stride=1, padding=1
+    )[0, 0]
+    F.mse_loss(diagnostic, target).backward()
+    projector_export = projector.detach()
+
+    assert projector_export.shape == (300, 300)
+    assert expanded.shape == (600, 600)
+    assert diagnostic.shape == (600, 600)
+    assert projector.grad is not None
+    assert projector.grad.shape == (300, 300)
+    assert torch.isfinite(projector.grad).all()
 
 
 def test_initialize_projector_mask_averages_refinement_block():

@@ -119,7 +119,9 @@ Totalinhibtion=89.8478
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition) 
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./Lshape600.png')
+# AIE_TARGET_PATH selects another native 600x600 target.
+TARGET_PATH = os.environ.get("AIE_TARGET_PATH", "./Lshape600.png")
+img = Image.open(TARGET_PATH)
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
 # Dont convert to mode L to decrease the bit level
