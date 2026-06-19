@@ -22,7 +22,6 @@ device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Working Device:',device)
 
 
-
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
     firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
     intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
@@ -95,10 +94,10 @@ intensity=20 #mW/cm2
 #Change intensity with different data pls
 dt=float(0.1) #s, time step
 #0.2 for 5fps
-total_steps=int(31/dt)
+total_steps=int(18/dt)
 tstepT0 = int(1.0 / dt) # only for loss and optimization.
 tstepT1 = int(14.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(16.5 / dt) # But need to change with DoC profile with distinct intensity
+tstepT2 = int(16.0 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=20.0538
@@ -175,7 +174,7 @@ ls_kernel=cv2.getGaussianKernel(ls_kernel_size,ls_sigma)
 ls=torch.from_numpy(np.outer(ls_kernel,ls_kernel)).view(1,1,ls_kernel_size,ls_kernel_size).to(torch.float32).to(device)
 ls_pad=ls_kernel_size//2
 
-numEpochs=1
+numEpochs=400
 #if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]
@@ -189,7 +188,7 @@ for epoch in range(numEpochs):
     opt_mask_pre=opt_mask.unsqueeze(0).unsqueeze(0)
     opt_mask_padded=F.pad(opt_mask_pre,pad=(ls_pad,ls_pad,ls_pad,ls_pad),mode='reflect')
     blur_mask=F.conv2d(opt_mask_padded,ls)[0,0]
-    blur_mask=opt_mask # for optimization without scattering
+    #blur_mask=opt_mask # for optimization without scattering
     
     if numEpochs == 1:
         plt.imshow(blur_mask.detach().cpu().numpy(),cmap='gray')
