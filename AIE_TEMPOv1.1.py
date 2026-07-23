@@ -82,8 +82,9 @@ def foregroundSSIMCuringLoss(finalDoC, target, foreground_threshold=15/255, wind
 
 
 #Experimental Physical data
-dx,dy=float(7.395e-6),float(7.395e-6)
-dfsvty=float(2000e-12) #m2^2/s 2000um2/s
+#dx,dy=float(7.395e-6),float(7.395e-6)
+dx,dy=float(4.905e-6),float(4.905e-6) # for 432x468 DLP
+O2_dfsvty=float(2000e-12) #m2^2/s 2000um2/s
 #dfsvty=float(200e-12) #O2 concentration-dependent
 TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 # TEMPO_dfsvty unknown, it should be small. 
@@ -92,22 +93,22 @@ TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 
 intensity=20 #mW/cm2 
 #Change intensity with different data pls
-dt=float(0.1) #s, time step
+dt=float(0.025) #s, time step
 #0.2 for 5fps
-total_steps=int(18/dt)
+total_steps=int(8/dt)
 tstepT0 = int(1.0 / dt) # only for loss and optimization.
-tstepT1 = int(14.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(16.0 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT1 = int(3.50 / dt) # When epoch is 1 for the simulation, Loss does not matter
+tstepT2 = int(6.0 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
-O2inhibition=20.0538
+O2inhibition=27.5100
 # 0 for no O2 inhibition
 #10.452 for 0mmol TEMPO concentration O2 only
 #Total_inhibition_time=4.239 # from experimental data
-Totalinhibtion=89.8478
-#0 for no inhibition
-#39.9671 for 1mmol TEMPO concentration
-#89.8478 for 5mmol TEMPO concentration
+Totalinhibtion=0
+#0 for no TEMPO inhibition
+#51.7456 for 1mmol TEMPO concentration
+#144.1397 for 5mmol TEMPO concentration
 
 
 #TEMPO_inibition_Time=Total_inhibition_time - O2_inhibition_time
@@ -115,7 +116,7 @@ Totalinhibtion=89.8478
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition) 
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./Lshape.png')
+img=Image.open('./circle_DLP.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
 # Dont convert to mode L to decrease the bit level
@@ -139,7 +140,7 @@ mask=torch.tensor(target.copy() * 255, dtype=torch.float32, device=device) # sca
 opt_mask=torch.nn.Parameter(mask.clone()) #shape(H,W)
 
 #Swiss O2diff convo
-O2_sigma=(2*dfsvty*dt)**0.5
+O2_sigma=(2*O2_dfsvty*dt)**0.5
 O2_sigma=O2_sigma/dx
 print(f'''O2 diffusion sigma: {O2_sigma:.2f} pixels''')
 if O2_sigma<1:
@@ -174,7 +175,7 @@ ls_kernel=cv2.getGaussianKernel(ls_kernel_size,ls_sigma)
 ls=torch.from_numpy(np.outer(ls_kernel,ls_kernel)).view(1,1,ls_kernel_size,ls_kernel_size).to(torch.float32).to(device)
 ls_pad=ls_kernel_size//2
 
-numEpochs=400
+numEpochs=1
 #if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]
@@ -191,16 +192,19 @@ for epoch in range(numEpochs):
     #blur_mask=opt_mask # for optimization without scattering
     
     if numEpochs == 1:
-        plt.imshow(blur_mask.detach().cpu().numpy(),cmap='gray')
-        plt.show()
-        print(blur_mask[H//2,W//2].item())
+        #plt.imshow(blur_mask.detach().cpu().numpy(),cmap='gray')
+        #plt.show()
+        print(f'Intensity at the Center: {blur_mask[H//2,W//2].item():.4f}')
     O2=[(torch.ones((H,W))*(O2inhibition)).to(torch.float32).to(device)]
     TEMPO=[(torch.ones((H,W))*(TEMPOinhibition)).to(torch.float32).to(device)]
     Dose=[torch.zeros((H,W)).to(torch.float32).to(device)]
     DoC=[torch.zeros((H,W)).to(torch.float32).to(device)]
 
     #A = -0.0231*(blur_mask.clamp(min=1e-12)/255 * intensity) + 2.044
-    B = 0.0290*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.2101
+    B = 0.0163*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4148 #0mMTEMPO
+    #B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO
+    #B =0.008*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.1972 #5mMTEMPO
+
     #C=O2inhibition/(blur_mask.clamp(min=1e-12)/255*intensity)
     #print(B[H//2,W//2].item()) # for debug
 
