@@ -1,0 +1,7 @@
+sample,power_mw,tempo_mm,trial_count
+20mW_0mMTEMPO,20,0,5
+20mW_5mMTEMPO,20,5,3
+30mW_0mMTEMPO,30,0,4
+30mW_5mMTEMPO,30,5,3
+40mW_0mMTEMPO,40,0,4
+40mW_5mMTEMPO,40,5,3
