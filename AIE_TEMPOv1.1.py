@@ -16,7 +16,7 @@ imagesO=[]
 imagesT=[]
 
 #folder_name = 'test_repro'
-folder_name ='260805\\260805_30mW_0mMol_Stairs_Simulation_opt'
+folder_name ='260812\\260812_30mW_0mMol_Sync_rect_TestOpt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
 os.makedirs(save_path, exist_ok=True)
@@ -28,10 +28,10 @@ print('Working Device:',device)
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
     firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
     intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
-    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.91 * target),'fro')
+    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.30 * target),'fro')
     #FinalLoss=F.mse_loss(finalDoC, target)
-    #return FinalLoss
-    return firstLoss + intermediateLoss + finalLoss #+ FinalLoss
+    return finalLoss#+intermediateLoss
+    #return firstLoss + intermediateLoss + finalLoss
 
 
 def _harris_corner_weights(
@@ -130,12 +130,12 @@ def foregroundSSIMCuringLoss(finalDoC, target, foreground_threshold=15/255, wind
 
 
 #Experimental Physical data
-dx,dy=float(7.395e-6),float(7.395e-6)
+dx,dy=float(7.6e-6),float(7.6e-6)
 #dx,dy=float(4.905e-6),float(4.905e-6) # for 432x468 DLP
 
-blur_size=15e-6 # used to be 600um to 7.4um pxs
+blur_size=30e-6 # used to be 600um to 7.4um pxs
  # set it zeros to optimize without scattering
-O2_dfsvty=float(900e-12) #m2^2/s 2000um2/s
+O2_dfsvty=float(400e-12) #m2^2/s 2000um2/s
 #dfsvty=float(200e-12) #O2 concentration-dependent
 TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 #The TEMPO now is still too small for diffusion.
@@ -148,10 +148,10 @@ chainGrowth_noise_std=0.0 #relative std of quenched per-pixel randomness in loca
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(7/dt)
+total_steps=int(6/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
-tstepT1 = int(3.7 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(6.0 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT1 = int(3.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
+tstepT2 = int(5 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=27.7117
@@ -166,10 +166,11 @@ Totalinhibtion=0
 
 #TEMPO_inibition_Time=Total_inhibition_time - O2_inhibition_time
 #TEMPOinhibition=TEMPO_inibition_Time * intensity #mJ/cm2
-TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition) 
+TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/stairs.png')
+img=Image.open('./GEO/Sync_rect.png')
+img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
 # Dont convert to mode L to decrease the bit level
@@ -193,6 +194,10 @@ DoC_radius=25
 mask=torch.tensor(target.copy() * 255, dtype=torch.float32, device=device) # scale to [0,255] to match /255 in physics
 opt_mask=torch.nn.Parameter(mask.clone()) #shape(H,W)
 
+grayscale_floor=15.0  #Zak needs it
+# min opt_mask value enforced inside the cure zone, so cured pixels never rely 100% on scatter
+cure_zone=mask>grayscale_floor # define a target fre ground.
+
 #Swiss O2diff convo
 O2_sigma=(2*O2_dfsvty*dt)**0.5
 O2_sigma=O2_sigma/dx
@@ -202,8 +207,9 @@ if O2_sigma<1:
     #quit()
 O2_kernel_size=int((O2_sigma-0.8)/0.3+1)*2+1
 print(f'O2 kernel size: {O2_kernel_size}')
-O2_kernel=cv2.getGaussianKernel(O2_kernel_size,O2_sigma)
+O2_kernel=cv2.getGaussianKernel(O2_kernel_size,O2_sigma) #set very small values to 0
 O2_diff=torch.from_numpy(np.outer(O2_kernel,O2_kernel)).view(1,1,O2_kernel_size,O2_kernel_size).to(torch.float32).to(device)
+print(O2_diff)
 O2_pad=O2_kernel_size//2
 
 #Swiss TEMPOdiff convo
@@ -215,9 +221,9 @@ if TEMPO_sigma<1:
     #quit()
 TEMPO_kernel_size=int((TEMPO_sigma-0.8)/0.3+1)*2+1
 print(f'TEMPO kernel size: {TEMPO_kernel_size}')
-TEMPO_kernel=cv2.getGaussianKernel(TEMPO_kernel_size,TEMPO_sigma)
+TEMPO_kernel=cv2.getGaussianKernel(TEMPO_kernel_size,TEMPO_sigma*0.8) #smaller sigma -> slower diffusion -> extreme situation: local TEMPO
 TEMPO_diff=torch.from_numpy(np.outer(TEMPO_kernel,TEMPO_kernel)).view(1,1,TEMPO_kernel_size,TEMPO_kernel_size).to(torch.float32).to(device)
-#print(TEMPO_diff)
+print(TEMPO_diff)
 TEMPO_pad=TEMPO_kernel_size//2
 
 #Light Scattering Gaussian Blur convo
@@ -226,17 +232,18 @@ ls_sigma=0.3*((ls_kernel_size-1)*0.5-1)+0.8
 print(f'scattering  sigma: {ls_sigma:.2f} pixels')
 print(f'scattering kernel size: {ls_kernel_size}')
 ls_kernel=cv2.getGaussianKernel(ls_kernel_size,ls_sigma)
+#print(ls_kernel)
 ls=torch.from_numpy(np.outer(ls_kernel,ls_kernel)).view(1,1,ls_kernel_size,ls_kernel_size).to(torch.float32).to(device)
 ls_pad=ls_kernel_size//2
 
 #Gradient smoothing kernel (optimization aid when blur_size==0; independent of physical scattering)
-grad_smooth_sigma=2.0 #pixels
+grad_smooth_sigma=2.0 # unit in pixels
 grad_smooth_kernel_size=int(grad_smooth_sigma*6)|1
 grad_smooth_kernel_np=cv2.getGaussianKernel(grad_smooth_kernel_size,grad_smooth_sigma)
 grad_smooth_kernel=torch.from_numpy(np.outer(grad_smooth_kernel_np,grad_smooth_kernel_np)).view(1,1,grad_smooth_kernel_size,grad_smooth_kernel_size).to(torch.float32).to(device)
 grad_smooth_pad=grad_smooth_kernel_size//2
 
-numEpochs=500
+numEpochs=1000
 #if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]
@@ -378,6 +385,7 @@ for epoch in range(numEpochs):
             opt_mask.grad=F.conv2d(grad_padded,grad_smooth_kernel)[0,0]
     optimizer.step()
     opt_mask.data.clamp_(0,255)
+    opt_mask.data[cure_zone]=opt_mask.data[cure_zone].clamp(min=grayscale_floor)
 
 
 #opt_mask.data range from o to 255
@@ -385,21 +393,20 @@ plt.figure()
 plt.plot(np.arange(len(loss_history)),loss_history)
 plt.savefig(os.path.join(save_path,'aaa_loss_history.png'))
 #plt.show()
-final_opt_mask=(opt_mask.detach().cpu().numpy())/255*65535
+final_opt_mask=(opt_mask.detach().cpu().numpy())
 #final_opt_mask is 16bit
 #plt.imshow(final_opt_mask,cmap='gray')
 #plt.show()
 file_path = os.path.join(save_path, 'aaa_final_opt_mask.png')
-io.imwrite(file_path, final_opt_mask.astype(np.uint16))
+io.imwrite(file_path, final_opt_mask.astype(np.uint8))
 blur_mask_pre=opt_mask.unsqueeze(0).unsqueeze(0)
 blur_mask_padded=F.pad(blur_mask_pre,pad=(ls_pad,ls_pad,ls_pad,ls_pad),mode='reflect')
 final_blur_mask=F.conv2d(blur_mask_padded,ls)[0,0].detach().cpu().numpy()
-final_blur_mask=final_blur_mask/255*65535
-#final_blur_mask is 16bit
+final_blur_mask=final_blur_mask
 #plt.imshow(final_blur_mask,cmap='gray')
 #plt.show()
 file_path = os.path.join(save_path, 'aaa_final_blur_mask.png')
-io.imwrite(file_path, final_blur_mask.astype(np.uint16))
+io.imwrite(file_path, final_blur_mask.astype(np.uint8))
 
 #Evaluation of final result
 file_path = os.path.join(save_path, 'allDoC.gif')
