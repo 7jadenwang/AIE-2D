@@ -1,0 +1,5 @@
+in total 28 lines
+
+1st row: 17 lines, width from 1 to 17px
+
+2nd row: 11 lines, width from 18 to 28px
