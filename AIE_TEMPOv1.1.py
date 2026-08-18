@@ -16,7 +16,7 @@ imagesO=[]
 imagesT=[]
 
 #folder_name = 'test_repro'
-folder_name ='260812\\260812_30mW_0mMol_Sync_rect_TestOpt'
+folder_name ='260818\\260818_30mW_0mMol_Sync_line_Test'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
 os.makedirs(save_path, exist_ok=True)
@@ -148,7 +148,7 @@ chainGrowth_noise_std=0.0 #relative std of quenched per-pixel randomness in loca
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(6/dt)
+total_steps=int(10/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(3.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
 tstepT2 = int(5 / dt)  # But need to change with DoC profile with distinct intensity
@@ -169,7 +169,7 @@ Totalinhibtion=0
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/Sync_rect.png')
+img=Image.open('./GEO/Sync_line.png')
 img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
@@ -243,7 +243,7 @@ grad_smooth_kernel_np=cv2.getGaussianKernel(grad_smooth_kernel_size,grad_smooth_
 grad_smooth_kernel=torch.from_numpy(np.outer(grad_smooth_kernel_np,grad_smooth_kernel_np)).view(1,1,grad_smooth_kernel_size,grad_smooth_kernel_size).to(torch.float32).to(device)
 grad_smooth_pad=grad_smooth_kernel_size//2
 
-numEpochs=1000
+numEpochs=1
 #if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]

@@ -1,0 +1,9 @@
+in total 
+
+1st row: 14 rects, width from 1 to 14 px
+
+2nd row: 10 rects, width from 15 to 24 px
+
+3rd row:8 rects, width from 25 to 32 px
+
+4th row: 5 rects, width 60, 65, 70, 75, 80px
