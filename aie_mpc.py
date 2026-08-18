@@ -14,8 +14,9 @@ class DifferentiableMPC:
     """Optimize a receding sequence of DLP masks through ``AIEModel``.
 
     The optimizer acts on unconstrained logits and maps them to valid
-    normalized grayscale masks with a sigmoid.  The default horizon is four
-    0.25 s control intervals (ten 0.025 s physics steps per interval).
+    normalized grayscale masks with a sigmoid. Control duration is always
+    ``physics_steps_per_control * model.params.dt`` and is reported by the
+    runner from the effective reference configuration.
     """
 
     def __init__(

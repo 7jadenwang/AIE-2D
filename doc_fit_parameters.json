@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "calibration_id": "doc_curve_calibration_v1",
+  "source_notebook": "DoC curve.ipynb",
+  "exported_at_utc": "2026-08-18T19:47:27.439258Z",
+  "averaging_method": "componentwise_arithmetic_mean_of_replicate_coefficients",
+  "conditions": [
+    {
+      "condition_id": "20mW_0mM_TEMPO",
+      "condition_label": "20 mW/cm^2, 0 mM TEMPO, new DLP",
+      "intensity_mw_cm2": 20.0,
+      "tempo_concentration_mM": 0.0,
+      "formula_id": "doc_minimum_exponent_v1",
+      "formula": "1 - a * exp(minimum(b * (c - t), 0))",
+      "source_data_file": "260722_circles_TPEoac/data_exports/intensity_data_processed.xlsx",
+      "source_sheet": "20mW",
+      "replicates": [
+        {
+          "label": "T1",
+          "source_column": "20mW_0mM_TEMPO_T1",
+          "sample_count": 347,
+          "a": 0.9668143202829362,
+          "b": 0.7394083380730682,
+          "c": 1.3274633894568142
+        },
+        {
+          "label": "T2",
+          "source_column": "20mW_0mM_TEMPO_T2",
+          "sample_count": 307,
+          "a": 0.967712858986682,
+          "b": 0.7292739914666491,
+          "c": 1.2591892322486442
+        }
+      ],
+      "average": {
+        "a": 0.9672635896348092,
+        "b": 0.7343411647698586,
+        "c": 1.2933263108527293
+      },
+      "notes": [
+        "Condition mapping follows loaded sheet/column names; the plot title incorrectly says 30 mW."
+      ]
+    },
+    {
+      "condition_id": "40mW_1mM_TEMPO",
+      "condition_label": "40 mW/cm^2, 1 mM TEMPO, new DLP",
+      "intensity_mw_cm2": 40.0,
+      "tempo_concentration_mM": 1.0,
+      "formula_id": "doc_minimum_exponent_v1",
+      "formula": "1 - a * exp(minimum(b * (c - t), 0))",
+      "source_data_file": "260722_circles_TPEoac/data_exports/intensity_data_processed.xlsx",
+      "source_sheet": "40mW",
+      "replicates": [
+        {
+          "label": "T1",
+          "source_column": "40mW_1mM_TEMPO_T1",
+          "sample_count": 259,
+          "a": 0.9789337463961992,
+          "b": 0.913864555496678,
+          "c": 1.4144909209952299
+        },
+        {
+          "label": "T2",
+          "source_column": "40mW_1mM_TEMPO_T2",
+          "sample_count": 208,
+          "a": 0.9618147252729291,
+          "b": 0.9285480913722327,
+          "c": 1.7290448365926083
+        }
+      ],
+      "average": {
+        "a": 0.9703742358345642,
+        "b": 0.9212063234344554,
+        "c": 1.571767878793919
+      },
+      "notes": [
+        "Condition mapping follows loaded sheet/column names; the plot title incorrectly says 20 mW."
+      ]
+    },
+    {
+      "condition_id": "20mW_5mM_TEMPO",
+      "condition_label": "20 mW/cm^2, 5 mM TEMPO, new DLP",
+      "intensity_mw_cm2": 20.0,
+      "tempo_concentration_mM": 5.0,
+      "formula_id": "doc_clipped_negative_exponent_v1",
+      "formula": "1 - a * exp(-clip(b * (c - t), 0, None))",
+      "source_data_file": "260722_circles_TPEoac/data_exports/intensity_data_processed.xlsx",
+      "source_sheet": "20mW",
+      "replicates": [
+        {
+          "label": "T1",
+          "source_column": "20mW_5mM_TEMPO_T1",
+          "sample_count": 275,
+          "a": 0.9764849572890398,
+          "b": -0.3337033539267293,
+          "c": 6.913787525171665
+        },
+        {
+          "label": "T2",
+          "source_column": "20mW_5mM_TEMPO_T2",
+          "sample_count": 292,
+          "a": 0.9748490357616237,
+          "b": -0.3669871842245499,
+          "c": 6.971980489574072
+        }
+      ],
+      "average": {
+        "a": 0.9756669965253317,
+        "b": -0.35034526907563956,
+        "c": 6.942884007372869
+      },
+      "notes": [
+        "This cell uses a distinct 20 mW-only formula for a reason the notebook marks as unknown."
+      ]
+    }
+  ],
+  "unresolved_workflows": [
+    {
+      "condition_label": "25 mW/cm^2, 0 mM TEMPO, April 28 data",
+      "formula": "1 - a * exp(minimum(b * (c - t), 1e-10))",
+      "reason": "Cell is unexecuted, has no fitted output, and references source data absent from this worktree."
+    }
+  ]
+}

@@ -1,15 +1,15 @@
 """Differentiable state-space form of the legacy AIE curing model.
 
-The equations and default calibration in this module are taken from
-``AIE_TEMPOv1.1.py``.  Projector masks are represented in normalized
-grayscale units in ``[0, 1]``; multiplying by 255 recovers the convention
-used by that script before its ``/ 255`` operation.
+The equations mirror ``AIE_TEMPOv1.1.py`` and every effective calibration is
+loaded through the read-only AST adapter in ``aie_reference.py``. Projector
+masks are normalized to ``[0, 1]``; the adapter validates the legacy 255-level
+grayscale convention without importing or executing the reference script.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
+from math import isfinite, sqrt
 from typing import Sequence
 
 import torch
@@ -17,49 +17,250 @@ import torch.nn.functional as F
 from torch import nn
 
 from aie_fine_grid import expand_projector_mask
+from aie_reference import load_reference_config
 
 
 @dataclass(frozen=True)
 class AIEParameters:
-    """Physical and numerical parameters from ``AIE_TEMPOv1.1.py``.
+    """Physical/model parameters resolved from ``AIE_TEMPOv1.1.py``.
 
     All inhibitor quantities and accumulated dose are in mJ/cm^2.  The
     projector intensity is in mW/cm^2, so multiplying it by ``dt`` gives the
-    per-step energy used by the legacy model.
+    per-step energy used by the legacy model. There are intentionally no
+    physical defaults here: normal construction must use ``from_reference``.
     """
 
-    pixel_pitch_m: float = 4.905e-6
-    dt: float = 0.025
-    intensity_mw_cm2: float = 20.0
-    o2_diffusivity_m2_s: float = 2000e-12
-    tempo_diffusivity_m2_s: float = 400e-12
-    o2_inhibition_mj_cm2: float = 27.5100
-    total_inhibition_mj_cm2: float = 0.0
-    scattering_blur_size_m: float = 600e-6
-    b_slope: float = 0.0163
-    b_intercept: float = 0.4148
-    projector_refinement: int = 1
-    minimum_normalized_intensity: float = 1e-12
-    division_epsilon: float = 1e-12
+    pixel_pitch_m: float
+    native_pixel_pitch_m: float
+    native_shape: tuple[int, int]
+    projector_refinement: int
+    dt: float
+    total_simulation_time_s: float
+    loss_sample_times_s: tuple[float, float, float]
+    intensity_mw_cm2: float
+    tempo_concentration_mM: float | None
+    o2_diffusivity_m2_s: float
+    tempo_diffusivity_m2_s: float
+    o2_inhibition_mj_cm2: float
+    total_inhibition_mj_cm2: float
+    scattering_blur_size_m: float
+    tempo_gaussian_sigma_scale: float
+    o2_diffusion_enabled: bool
+    tempo_diffusion_enabled: bool
+    chain_growth_noise_std: float
+    chain_growth_noise_enabled: bool
+    b_slope: float
+    b_intercept: float
+    b_condition_label: str
+    minimum_normalized_intensity: float
+    division_epsilon: float
+    mask_grayscale_max: float
+    reference_model_source: str
+    reference_model_path: str
+    reference_model_sha256: str
+    reference_structure_sha256: str
+    model_structure_version: int
+    doc_model_id: str
+    doc_model_formula: str
+    doc_fit_applied_to_governing_law: bool
+    doc_calibration_source: str
+    doc_calibration_path: str
+    doc_calibration_sha256: str
+    doc_fit_selection_status: str
+    available_doc_fit_condition_ids: tuple[str, ...]
+    doc_fit_calibration_id: str | None
+    doc_fit_condition_id: str | None
+    doc_fit_condition_label: str | None
+    doc_fit_formula_id: str | None
+    doc_fit_formula: str | None
+    doc_fit_exported_at_utc: str | None
+    doc_fit_a: float | None
+    doc_fit_b: float | None
+    doc_fit_c: float | None
+
+    @classmethod
+    def from_reference(cls, reference: object | None = None) -> "AIEParameters":
+        """Map the authoritative reference configuration into model fields."""
+
+        resolved = reference or load_reference_config()
+        doc_fit = resolved.doc_fit
+        return cls(
+            pixel_pitch_m=resolved.native_pixel_pitch_m,
+            native_pixel_pitch_m=resolved.native_pixel_pitch_m,
+            native_shape=tuple(resolved.native_shape),
+            projector_refinement=resolved.projector_refinement,
+            dt=resolved.dt,
+            total_simulation_time_s=resolved.total_simulation_time_s,
+            loss_sample_times_s=tuple(resolved.loss_sample_times_s),
+            intensity_mw_cm2=resolved.intensity_mw_cm2,
+            tempo_concentration_mM=resolved.tempo_concentration_mM,
+            o2_diffusivity_m2_s=resolved.o2_diffusivity_m2_s,
+            tempo_diffusivity_m2_s=resolved.tempo_diffusivity_m2_s,
+            o2_inhibition_mj_cm2=resolved.o2_inhibition_mj_cm2,
+            total_inhibition_mj_cm2=resolved.total_inhibition_mj_cm2,
+            scattering_blur_size_m=resolved.scattering_blur_size_m,
+            tempo_gaussian_sigma_scale=resolved.tempo_gaussian_sigma_scale,
+            o2_diffusion_enabled=resolved.o2_diffusion_enabled,
+            tempo_diffusion_enabled=resolved.tempo_diffusion_enabled,
+            chain_growth_noise_std=resolved.chain_growth_noise_std,
+            chain_growth_noise_enabled=resolved.chain_growth_noise_enabled,
+            b_slope=resolved.b_slope,
+            b_intercept=resolved.b_intercept,
+            b_condition_label=resolved.b_condition_label,
+            minimum_normalized_intensity=resolved.minimum_normalized_intensity,
+            division_epsilon=resolved.division_epsilon,
+            mask_grayscale_max=resolved.mask_grayscale_max,
+            reference_model_source=resolved.reference_model_source,
+            reference_model_path=resolved.reference_model_path,
+            reference_model_sha256=resolved.reference_model_sha256,
+            reference_structure_sha256=resolved.reference_structure_sha256,
+            model_structure_version=resolved.model_structure_version,
+            doc_model_id=resolved.doc_model_id,
+            doc_model_formula=resolved.doc_model_formula,
+            doc_fit_applied_to_governing_law=(
+                resolved.doc_fit_applied_to_governing_law
+            ),
+            doc_calibration_source=resolved.doc_calibration_source,
+            doc_calibration_path=resolved.doc_calibration_path,
+            doc_calibration_sha256=resolved.doc_calibration_sha256,
+            doc_fit_selection_status=resolved.doc_fit_selection_status,
+            available_doc_fit_condition_ids=tuple(
+                resolved.available_doc_fit_condition_ids
+            ),
+            doc_fit_calibration_id=(doc_fit.calibration_id if doc_fit else None),
+            doc_fit_condition_id=(doc_fit.condition_id if doc_fit else None),
+            doc_fit_condition_label=(doc_fit.condition_label if doc_fit else None),
+            doc_fit_formula_id=(doc_fit.formula_id if doc_fit else None),
+            doc_fit_formula=(doc_fit.formula if doc_fit else None),
+            doc_fit_exported_at_utc=(doc_fit.exported_at_utc if doc_fit else None),
+            doc_fit_a=(doc_fit.a if doc_fit else None),
+            doc_fit_b=(doc_fit.b if doc_fit else None),
+            doc_fit_c=(doc_fit.c if doc_fit else None),
+        )
+
+    def provenance_metadata(self) -> dict[str, object]:
+        """Return the effective reference values needed to audit a run."""
+
+        return {
+            "reference_model_source": self.reference_model_source,
+            "reference_model_path": self.reference_model_path,
+            "reference_model_sha256": self.reference_model_sha256,
+            "reference_structure_sha256": self.reference_structure_sha256,
+            "model_structure_version": self.model_structure_version,
+            "native_shape": self.native_shape,
+            "native_pixel_pitch_m": self.native_pixel_pitch_m,
+            "effective_pixel_pitch_m": self.pixel_pitch_m,
+            "projector_refinement": self.projector_refinement,
+            "dt": self.dt,
+            "total_simulation_time_s": self.total_simulation_time_s,
+            "loss_sample_times_s": self.loss_sample_times_s,
+            "intensity_mw_cm2": self.intensity_mw_cm2,
+            "tempo_concentration_mM": self.tempo_concentration_mM,
+            "o2_diffusivity_m2_s": self.o2_diffusivity_m2_s,
+            "tempo_diffusivity_m2_s": self.tempo_diffusivity_m2_s,
+            "o2_inhibition_mj_cm2": self.o2_inhibition_mj_cm2,
+            "tempo_inhibition_mj_cm2": self.tempo_inhibition_mj_cm2,
+            "total_inhibition_mj_cm2": self.total_inhibition_mj_cm2,
+            "scattering_blur_size_m": self.scattering_blur_size_m,
+            "tempo_gaussian_sigma_scale": self.tempo_gaussian_sigma_scale,
+            "o2_diffusion_enabled": self.o2_diffusion_enabled,
+            "tempo_diffusion_enabled": self.tempo_diffusion_enabled,
+            "chain_growth_noise_std": self.chain_growth_noise_std,
+            "chain_growth_noise_enabled": self.chain_growth_noise_enabled,
+            "b_slope": self.b_slope,
+            "b_intercept": self.b_intercept,
+            "b_condition_label": self.b_condition_label,
+            "minimum_normalized_intensity": self.minimum_normalized_intensity,
+            "division_epsilon": self.division_epsilon,
+            "mask_grayscale_max": self.mask_grayscale_max,
+            "doc_model_id": self.doc_model_id,
+            "doc_model_formula": self.doc_model_formula,
+            "doc_fit_applied_to_governing_law": (
+                self.doc_fit_applied_to_governing_law
+            ),
+            "doc_calibration_source": self.doc_calibration_source,
+            "doc_calibration_path": self.doc_calibration_path,
+            "doc_calibration_sha256": self.doc_calibration_sha256,
+            "doc_fit_selection_status": self.doc_fit_selection_status,
+            "available_doc_fit_condition_ids": self.available_doc_fit_condition_ids,
+            "doc_fit_calibration_id": self.doc_fit_calibration_id,
+            "doc_fit_condition_id": self.doc_fit_condition_id,
+            "doc_fit_condition_label": self.doc_fit_condition_label,
+            "doc_fit_formula_id": self.doc_fit_formula_id,
+            "doc_fit_formula": self.doc_fit_formula,
+            "doc_fit_exported_at_utc": self.doc_fit_exported_at_utc,
+            "doc_fit_a": self.doc_fit_a,
+            "doc_fit_b": self.doc_fit_b,
+            "doc_fit_c": self.doc_fit_c,
+        }
 
     def __post_init__(self) -> None:
         positive = {
             "pixel_pitch_m": self.pixel_pitch_m,
+            "native_pixel_pitch_m": self.native_pixel_pitch_m,
             "dt": self.dt,
+            "total_simulation_time_s": self.total_simulation_time_s,
             "intensity_mw_cm2": self.intensity_mw_cm2,
             "o2_diffusivity_m2_s": self.o2_diffusivity_m2_s,
             "tempo_diffusivity_m2_s": self.tempo_diffusivity_m2_s,
             "scattering_blur_size_m": self.scattering_blur_size_m,
+            "tempo_gaussian_sigma_scale": self.tempo_gaussian_sigma_scale,
             "minimum_normalized_intensity": self.minimum_normalized_intensity,
             "division_epsilon": self.division_epsilon,
+            "mask_grayscale_max": self.mask_grayscale_max,
         }
         for name, value in positive.items():
-            if value <= 0:
+            if not isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
-        if self.o2_inhibition_mj_cm2 < 0 or self.total_inhibition_mj_cm2 < 0:
-            raise ValueError("inhibition energies must be nonnegative")
+        finite_values = {
+            "o2_inhibition_mj_cm2": self.o2_inhibition_mj_cm2,
+            "total_inhibition_mj_cm2": self.total_inhibition_mj_cm2,
+            "chain_growth_noise_std": self.chain_growth_noise_std,
+            "b_slope": self.b_slope,
+            "b_intercept": self.b_intercept,
+        }
+        if self.tempo_concentration_mM is not None:
+            finite_values["tempo_concentration_mM"] = self.tempo_concentration_mM
+        doc_fit_values = (self.doc_fit_a, self.doc_fit_b, self.doc_fit_c)
+        if any(value is not None for value in doc_fit_values) and not all(
+            value is not None for value in doc_fit_values
+        ):
+            raise ValueError("DoC fit a/b/c must either all be present or all be absent")
+        if self.doc_fit_a is not None:
+            finite_values.update(
+                {
+                    "doc_fit_a": self.doc_fit_a,
+                    "doc_fit_b": self.doc_fit_b,
+                    "doc_fit_c": self.doc_fit_c,
+                }
+            )
+        for name, value in finite_values.items():
+            if not isfinite(value):
+                raise ValueError(f"{name} must be finite, got {value}")
+        if (
+            (self.tempo_concentration_mM is not None and self.tempo_concentration_mM < 0)
+            or self.o2_inhibition_mj_cm2 < 0
+            or self.total_inhibition_mj_cm2 < 0
+            or self.chain_growth_noise_std < 0
+        ):
+            raise ValueError(
+                "TEMPO concentration, noise, and inhibition energies must be nonnegative"
+            )
         if self.projector_refinement < 1:
             raise ValueError("projector_refinement must be at least 1")
+        if len(self.native_shape) != 2 or any(value < 1 for value in self.native_shape):
+            raise ValueError(f"native_shape must be two positive dimensions, got {self.native_shape}")
+        if self.model_structure_version < 1:
+            raise ValueError("model_structure_version must be at least 1")
+        for name, fingerprint in (
+            ("reference_model_sha256", self.reference_model_sha256),
+            ("reference_structure_sha256", self.reference_structure_sha256),
+            ("doc_calibration_sha256", self.doc_calibration_sha256),
+        ):
+            if len(fingerprint) != 64 or any(
+                character not in "0123456789abcdef" for character in fingerprint
+            ):
+                raise ValueError(f"{name} must be a lowercase SHA-256 hex digest")
 
     @property
     def tempo_inhibition_mj_cm2(self) -> float:
@@ -76,6 +277,7 @@ class AIEState:
     tempo: torch.Tensor
     dose: torch.Tensor
     doc: torch.Tensor
+    chain_growth_multiplier: torch.Tensor | None = None
 
     @property
     def shape(self) -> torch.Size:
@@ -84,7 +286,18 @@ class AIEState:
     def detach(self) -> "AIEState":
         """Return a state detached at an MPC estimation boundary."""
 
-        return AIEState(*(field.detach() for field in self.tensors()))
+        multiplier = (
+            self.chain_growth_multiplier.detach()
+            if self.chain_growth_multiplier is not None
+            else None
+        )
+        return AIEState(
+            o2=self.o2.detach(),
+            tempo=self.tempo.detach(),
+            dose=self.dose.detach(),
+            doc=self.doc.detach(),
+            chain_growth_multiplier=multiplier,
+        )
 
     def tensors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.o2, self.tempo, self.dose, self.doc
@@ -142,7 +355,7 @@ class AIEModel(nn.Module):
         dtype: torch.dtype = torch.float32,
     ) -> None:
         super().__init__()
-        self.params = params or AIEParameters()
+        self.params = params if params is not None else AIEParameters.from_reference()
         selected_device = torch.device(device or "cpu")
         if not dtype.is_floating_point:
             raise TypeError(f"AIEModel requires a floating dtype, got {dtype}")
@@ -166,7 +379,10 @@ class AIEModel(nn.Module):
             o2_size, o2_sigma, device=selected_device, dtype=dtype
         )
         tempo_kernel = _gaussian_kernel_1d(
-            tempo_size, tempo_sigma, device=selected_device, dtype=dtype
+            tempo_size,
+            tempo_sigma * self.params.tempo_gaussian_sigma_scale,
+            device=selected_device,
+            dtype=dtype,
         )
         scattering_kernel = _gaussian_kernel_1d(
             scattering_size,
@@ -215,7 +431,20 @@ class AIEModel(nn.Module):
             spatial_shape, self.params.tempo_inhibition_mj_cm2, **field_options
         )
         zeros = torch.zeros(spatial_shape, **field_options)
-        return AIEState(o2=o2, tempo=tempo, dose=zeros.clone(), doc=zeros.clone())
+        chain_growth_multiplier = None
+        if self.params.chain_growth_noise_std > 0:
+            chain_growth_multiplier = (
+                1
+                + self.params.chain_growth_noise_std
+                * torch.randn(spatial_shape, **field_options)
+            ).clamp_min(1e-3)
+        return AIEState(
+            o2=o2,
+            tempo=tempo,
+            dose=zeros.clone(),
+            doc=zeros.clone(),
+            chain_growth_multiplier=chain_growth_multiplier,
+        )
 
     def control_shape_for(self, state_shape: Sequence[int]) -> tuple[int, int]:
         """Return the DLP mask shape corresponding to a simulation-grid shape."""
@@ -266,7 +495,7 @@ class AIEModel(nn.Module):
         )
 
     def step(self, state: AIEState, projector_mask: torch.Tensor) -> AIEState:
-        """Advance the physical state by one 0.025 s step by default."""
+        """Advance the physical state by one reference-configured time step."""
 
         self._validate_state(state)
         prepared = self.prepare_control(projector_mask, state.shape)
@@ -284,15 +513,17 @@ class AIEModel(nn.Module):
                 f"state shape {tuple(state.shape)}"
             )
 
-        # v1.1 computes an O2 convolution and immediately overwrites it with
-        # the previous local field.  Preserve that effective no-diffusion
-        # behavior instead of silently enabling O2 diffusion.
-        o2_diffused = state.o2
-
-        # The legacy source marks this Gaussian TEMPO diffusion expression as
-        # questionable ("wrong here") but uses it, so it remains unchanged.
-        tempo_diffused = self._gaussian_blur(
-            state.tempo, self.tempo_kernel_1d, "TEMPO diffusion"
+        o2_diffused = (
+            self._gaussian_blur(state.o2, self.o2_kernel_1d, "O2 diffusion")
+            if self.params.o2_diffusion_enabled
+            else state.o2
+        )
+        tempo_diffused = (
+            self._gaussian_blur(
+                state.tempo, self.tempo_kernel_1d, "TEMPO diffusion"
+            )
+            if self.params.tempo_diffusion_enabled
+            else state.tempo
         )
 
         o2_next = torch.clamp(o2_diffused - control.energy, min=0.0)
@@ -322,11 +553,20 @@ class AIEModel(nn.Module):
         # Keep that literal extension here rather than inventing a new kinetic
         # state or exposure law for this first controller.
         exposure_time = dose_next / safe_intensity
+        effective_b = control.b
+        if state.chain_growth_multiplier is not None:
+            effective_b = effective_b * state.chain_growth_multiplier
         doc_candidate = 1.0 - torch.exp(
-            -torch.clamp(control.b * exposure_time, min=0.0)
+            -torch.clamp(effective_b * exposure_time, min=0.0)
         )
         doc_next = torch.where(curing, doc_candidate, state.doc)
-        return AIEState(o2=o2_next, tempo=tempo_next, dose=dose_next, doc=doc_next)
+        return AIEState(
+            o2=o2_next,
+            tempo=tempo_next,
+            dose=dose_next,
+            doc=doc_next,
+            chain_growth_multiplier=state.chain_growth_multiplier,
+        )
 
     def advance(
         self,
@@ -416,6 +656,22 @@ class AIEModel(nn.Module):
             if field.dtype != self.dtype:
                 raise ValueError(
                     f"state.{name} has dtype {field.dtype}, expected {self.dtype}"
+                )
+        multiplier = state.chain_growth_multiplier
+        if self.params.chain_growth_noise_std > 0 and multiplier is None:
+            raise ValueError(
+                "state.chain_growth_multiplier is required when "
+                "chain_growth_noise_std > 0"
+            )
+        if multiplier is not None:
+            if tuple(multiplier.shape) != reference_shape:
+                raise ValueError(
+                    "state.chain_growth_multiplier has shape "
+                    f"{tuple(multiplier.shape)}, expected {reference_shape}"
+                )
+            if multiplier.device != self.device or multiplier.dtype != self.dtype:
+                raise ValueError(
+                    "state.chain_growth_multiplier must match model device and dtype"
                 )
 
     def _validate_mask(
