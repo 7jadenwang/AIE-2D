@@ -1,9 +1,9 @@
 """Run native or physically consistent coarse-grid differentiable AIE MPC.
 
-All experiment targets and final physical masks use the native 300 x 300 DLP
-grid. Coarse mode optimizes a block-averaged target on a lower-resolution
-grid with the same physical field of view, expands applied masks by constant
-blocks, and replays those masks through a fresh native-resolution AIE model.
+Each experiment's native grid is the loaded target's exact 2-D pixel shape.
+Coarse mode optimizes a block-averaged target on a lower-resolution grid with
+the same physical field of view, expands applied masks by constant blocks, and
+replays those masks through a fresh native-resolution AIE model.
 
 Run ``python run_mpc.py --smoke-test`` for lightweight physics, gradient, MPC,
 resolution-conversion, field-of-view, and native-replay validation.
@@ -31,7 +31,13 @@ import torch.nn.functional as F
 from PIL import GifImagePlugin, Image
 
 from aie_fine_grid import expand_projector_mask, initialize_projector_mask
-from aie_model import AIEModel, AIEParameters, AIEState
+from aie_model import (
+    DOC_HISTORY_DESCRIPTION,
+    DOC_HISTORY_MODE,
+    AIEModel,
+    AIEParameters,
+    AIEState,
+)
 from aie_mpc import DifferentiableMPC
 import aie_reference
 from aie_reference import load_reference_config, reference_step_torch
@@ -39,8 +45,6 @@ from aie_reference import load_reference_config, reference_step_torch
 
 REPOSITORY_DIR = Path(__file__).resolve().parent
 GEO_DIR = REPOSITORY_DIR / "GEO"
-REFERENCE_CONFIG = load_reference_config()
-NATIVE_GRID = tuple(REFERENCE_CONFIG.native_shape)
 
 
 @dataclass(frozen=True)
@@ -56,12 +60,16 @@ class ResolutionConfig:
 
     @property
     def native_fov_m(self) -> tuple[float, float]:
+        """Return physical field of view as ``(FOV_y, FOV_x)``."""
+
         return tuple(
             dimension * self.native_pixel_pitch_m for dimension in self.native_shape
         )
 
     @property
     def optimization_fov_m(self) -> tuple[float, float]:
+        """Return optimization field of view as ``(FOV_y, FOV_x)``."""
+
         return tuple(
             dimension * self.optimization_pixel_pitch_m
             for dimension in self.optimization_shape
@@ -71,12 +79,21 @@ class ResolutionConfig:
 def build_resolution_config(
     resolution_mode: str,
     coarsen_factor: int,
+    native_shape: tuple[int, int],
     reference: object | None = None,
 ) -> ResolutionConfig:
     """Validate a resolution mode and preserve the native physical field of view."""
 
     resolved_reference = reference or load_reference_config()
-    native_shape = tuple(resolved_reference.native_shape)
+    native_shape = tuple(native_shape)
+    if len(native_shape) != 2 or any(
+        not isinstance(dimension, int) or dimension <= 0
+        for dimension in native_shape
+    ):
+        raise ValueError(
+            f"native_shape must contain two positive integer dimensions, got "
+            f"{native_shape}"
+        )
     native_pitch = resolved_reference.native_pixel_pitch_m
     if resolution_mode not in {"native", "coarse"}:
         raise ValueError(
@@ -91,8 +108,9 @@ def build_resolution_config(
             )
         if any(dimension % coarsen_factor for dimension in native_shape):
             raise ValueError(
-                f"coarsen_factor {coarsen_factor} must divide the native grid "
-                f"{native_shape} exactly; no rounding is allowed"
+                f"coarsen_factor {coarsen_factor} must divide both dimensions of "
+                f"the native grid {native_shape} exactly; no resizing, cropping, "
+                "padding, or rounding is allowed"
             )
         factor = coarsen_factor
 
@@ -153,13 +171,27 @@ def load_normalized_target(path: Path) -> torch.Tensor:
 
 
 def require_native_target(target: torch.Tensor, path: Path | None = None) -> None:
-    """Reject any target that is not already the physical 300 x 300 grid."""
+    """Validate a native target without changing its spatial dimensions."""
 
-    if tuple(target.shape) != NATIVE_GRID:
-        location = f" {path}" if path is not None else ""
+    location = f" {path}" if path is not None else ""
+    if target.ndim != 2:
         raise ValueError(
-            f"target{location} must be exactly {NATIVE_GRID}, got "
-            f"{tuple(target.shape)}; targets are never resized, cropped, or padded"
+            f"target{location} must be a 2D grayscale image, got shape "
+            f"{tuple(target.shape)}"
+        )
+    if any(dimension <= 0 for dimension in target.shape):
+        raise ValueError(
+            f"target{location} dimensions must be positive, got {tuple(target.shape)}"
+        )
+    with torch.no_grad():
+        if not bool(torch.isfinite(target).all()):
+            raise ValueError(f"target{location} contains NaN or Inf")
+        minimum = float(target.min())
+        maximum = float(target.max())
+    if minimum < 0.0 or maximum > 1.0:
+        raise ValueError(
+            f"target{location} values must be normalized to [0, 1], got "
+            f"[{minimum:.6g}, {maximum:.6g}]"
         )
 
 
@@ -169,6 +201,12 @@ def construct_optimization_target(
     """Return the unchanged native target or an exact block-average target."""
 
     require_native_target(target_native)
+    if tuple(target_native.shape) != config.native_shape:
+        raise ValueError(
+            f"target shape {tuple(target_native.shape)} does not match configured "
+            f"native shape {config.native_shape}; targets are never resized, "
+            "cropped, or padded"
+        )
     if config.resolution_mode == "native":
         return target_native
     target_coarse = initialize_projector_mask(
@@ -200,9 +238,9 @@ def recover_control_to_native(
         native_control = expand_projector_mask(
             optimization_control, refinement=config.coarsen_factor
         )
-    if tuple(native_control.shape) != NATIVE_GRID:
+    if tuple(native_control.shape) != config.native_shape:
         raise AssertionError(
-            f"recovered physical mask must have shape {NATIVE_GRID}, got "
+            f"recovered physical mask must have shape {config.native_shape}, got "
             f"{tuple(native_control.shape)}"
         )
     return native_control
@@ -330,6 +368,7 @@ def native_aie_parameters(reference: object | None = None) -> AIEParameters:
 
 def replay_native_controls(
     native_params: AIEParameters,
+    native_shape: tuple[int, int],
     applied_controls_native: list[torch.Tensor],
     physics_steps_per_control: int,
     device: torch.device,
@@ -343,15 +382,21 @@ def replay_native_controls(
             "native replay parameters must exactly match the current "
             "AIE_TEMPOv1.1.py reference configuration"
         )
+    native_shape = tuple(native_shape)
+    if len(native_shape) != 2 or any(dimension <= 0 for dimension in native_shape):
+        raise ValueError(
+            f"native replay shape must contain two positive dimensions, got "
+            f"{native_shape}"
+        )
     native_model = AIEModel(native_params, device=device)
-    native_state = native_model.initialize_state(NATIVE_GRID)
+    native_state = native_model.initialize_state(native_shape)
     if doc_frame_callback is not None:
         doc_frame_callback(0, native_state.doc)
     with torch.no_grad():
         for replay_step, control in enumerate(applied_controls_native, start=1):
-            if tuple(control.shape) != NATIVE_GRID:
+            if tuple(control.shape) != native_shape:
                 raise ValueError(
-                    f"native replay control must have shape {NATIVE_GRID}, got "
+                    f"native replay control must have shape {native_shape}, got "
                     f"{tuple(control.shape)}"
                 )
             native_state = native_model.advance(
@@ -391,9 +436,14 @@ def _print_resolution_header(
     args: argparse.Namespace,
     params: AIEParameters,
 ) -> None:
-    native_fov_um = tuple(value * 1e6 for value in config.native_fov_m)
-    optimization_fov_um = tuple(value * 1e6 for value in config.optimization_fov_m)
+    native_fov_y_um, native_fov_x_um = (
+        value * 1e6 for value in config.native_fov_m
+    )
+    optimization_fov_y_um, optimization_fov_x_um = (
+        value * 1e6 for value in config.optimization_fov_m
+    )
     print(f"resolution_mode={config.resolution_mode}")
+    print(f"target_shape={config.native_shape}")
     print(f"native_grid={config.native_shape}")
     print(f"optimization_grid={config.optimization_shape}")
     if config.resolution_mode == "coarse":
@@ -401,11 +451,14 @@ def _print_resolution_header(
     print(f"pixel_pitch={config.optimization_pixel_pitch_m * 1e6:.6f} um")
     if config.resolution_mode == "coarse":
         print(f"native_pixel_pitch={config.native_pixel_pitch_m * 1e6:.6f} um")
-    print(f"native FOV: {native_fov_um[0]:.6f} x {native_fov_um[1]:.6f} um")
+    print(
+        f"native FOV: x={native_fov_x_um:.6f} um, "
+        f"y={native_fov_y_um:.6f} um"
+    )
     if config.resolution_mode == "coarse":
         print(
-            f"coarse FOV: {optimization_fov_um[0]:.6f} x "
-            f"{optimization_fov_um[1]:.6f} um"
+            f"coarse FOV: x={optimization_fov_x_um:.6f} um, "
+            f"y={optimization_fov_y_um:.6f} um"
         )
     print(
         f"device={device} dt={params.dt:.3f}s "
@@ -425,7 +478,10 @@ def _print_parameter_provenance(params: AIEParameters) -> None:
     print(f"Reference structure SHA256: {params.reference_structure_sha256}")
     print(f"DoC calibration: {params.doc_calibration_source}")
     print(f"DoC calibration SHA256: {params.doc_calibration_sha256}")
-    print(f"native grid: {params.native_shape[0]} x {params.native_shape[1]}")
+    print(
+        "reference calibration grid: "
+        f"{params.native_shape[0]} x {params.native_shape[1]}"
+    )
     print(f"native pixel pitch: {params.native_pixel_pitch_m * 1e6:.6f} um")
     print(f"dt: {params.dt:.6g} s")
     print(f"intensity: {params.intensity_mw_cm2:.6g} mW/cm^2")
@@ -443,6 +499,8 @@ def _print_parameter_provenance(params: AIEParameters) -> None:
         f"Gaussian sigma scale={params.tempo_gaussian_sigma_scale:.6g}"
     )
     print(f"DoC model: {params.doc_model_id}")
+    print(f"DoC history mode: {DOC_HISTORY_MODE}")
+    print(f"DoC history status: {DOC_HISTORY_DESCRIPTION}")
     print(
         f"active B: {params.b_slope:.12g} * local_intensity + "
         f"{params.b_intercept:.12g} ({params.b_condition_label})"
@@ -468,8 +526,15 @@ def run_demo(args: argparse.Namespace) -> None:
     if args.control_steps < 1:
         raise ValueError(f"control_steps must be at least 1, got {args.control_steps}")
     reference = load_reference_config()
+    target_path = resolve_target_path(args.target)
+    target_native = load_normalized_target(target_path)
+    require_native_target(target_native, target_path)
+    native_shape = tuple(target_native.shape)
     config = build_resolution_config(
-        args.resolution_mode, args.coarsen_factor, reference=reference
+        args.resolution_mode,
+        args.coarsen_factor,
+        native_shape,
+        reference=reference,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     native_params = native_aie_parameters(reference)
@@ -485,9 +550,6 @@ def run_demo(args: argparse.Namespace) -> None:
     _print_parameter_provenance(native_params)
     _print_resolution_header(config, device, args, optimization_params)
 
-    target_path = resolve_target_path(args.target)
-    target_native = load_normalized_target(target_path)
-    require_native_target(target_native, target_path)
     target_native = target_native.to(device=device)
     optimization_target = construct_optimization_target(target_native, config)
     model = AIEModel(optimization_params, device=device)
@@ -527,7 +589,7 @@ def run_demo(args: argparse.Namespace) -> None:
         coarse_doc_frame_paths.append(initial_doc_path)
     else:
         initial_doc_path = args.output_dir / "doc_frame_native_000.png"
-        save_doc_frame(state.doc, initial_doc_path, NATIVE_GRID)
+        save_doc_frame(state.doc, initial_doc_path, config.native_shape)
         native_doc_frame_paths.append(initial_doc_path)
     horizon_energy_at_full_power = (
         optimization_params.intensity_mw_cm2
@@ -562,7 +624,7 @@ def run_demo(args: argparse.Namespace) -> None:
             doc_frame_path = (
                 args.output_dir / f"doc_frame_native_{doc_frame_index:03d}.png"
             )
-            save_doc_frame(state.doc, doc_frame_path, NATIVE_GRID)
+            save_doc_frame(state.doc, doc_frame_path, config.native_shape)
             native_doc_frame_paths.append(doc_frame_path)
         guess = controller.shift_warm_start(optimized_controls)
         applied_native = recover_control_to_native(applied_control, config).detach().clone()
@@ -607,11 +669,12 @@ def run_demo(args: argparse.Namespace) -> None:
 
         def save_native_replay_frame(frame_index: int, doc: torch.Tensor) -> None:
             frame_path = args.output_dir / f"doc_frame_native_{frame_index:03d}.png"
-            save_doc_frame(doc, frame_path, NATIVE_GRID)
+            save_doc_frame(doc, frame_path, config.native_shape)
             native_doc_frame_paths.append(frame_path)
 
         native_state = replay_native_controls(
             native_params,
+            config.native_shape,
             applied_controls_native,
             args.physics_steps_per_control,
             device,
@@ -626,11 +689,12 @@ def run_demo(args: argparse.Namespace) -> None:
     save_gif_from_frames(native_doc_frame_paths, native_gif_path)
 
     for name, field in zip(
-        ("o2", "tempo", "dose", "doc"), native_state.tensors()
+        ("o2", "tempo", "dose", "reaction_progress", "doc"),
+        native_state.tensors(),
     ):
-        if tuple(field.shape) != NATIVE_GRID:
+        if tuple(field.shape) != config.native_shape:
             raise AssertionError(
-                f"final native {name} must have shape {NATIVE_GRID}, got "
+                f"final native {name} must have shape {config.native_shape}, got "
                 f"{tuple(field.shape)}"
             )
     save_grayscale(native_state.doc, args.output_dir / "final_doc_native.png")
@@ -651,6 +715,10 @@ def run_demo(args: argparse.Namespace) -> None:
         "optimization_pixel_pitch_m": np.float64(
             config.optimization_pixel_pitch_m
         ),
+        "native_fov_y_m": np.float64(config.native_fov_m[0]),
+        "native_fov_x_m": np.float64(config.native_fov_m[1]),
+        "optimization_fov_y_m": np.float64(config.optimization_fov_m[0]),
+        "optimization_fov_x_m": np.float64(config.optimization_fov_m[1]),
         "dt": np.float64(native_params.dt),
         "physics_steps_per_control": np.int64(args.physics_steps_per_control),
         "horizon": np.int64(args.horizon),
@@ -684,6 +752,8 @@ def run_demo(args: argparse.Namespace) -> None:
         ),
         "doc_fit_formula_id": np.asarray(native_params.doc_fit_formula_id or ""),
         "doc_model_id": np.asarray(native_params.doc_model_id),
+        "doc_history_mode": np.asarray(DOC_HISTORY_MODE),
+        "doc_history_description": np.asarray(DOC_HISTORY_DESCRIPTION),
         "reference_config_json": np.asarray(
             json.dumps(reference.to_metadata(), sort_keys=True)
         ),
@@ -698,6 +768,9 @@ def run_demo(args: argparse.Namespace) -> None:
         "final_o2_native": native_state.o2.detach().cpu().numpy(),
         "final_tempo_native": native_state.tempo.detach().cpu().numpy(),
         "final_dose_native": native_state.dose.detach().cpu().numpy(),
+        "final_reaction_progress_native": native_state.reaction_progress.detach()
+        .cpu()
+        .numpy(),
         "final_doc_native": native_state.doc.detach().cpu().numpy(),
         "loss_histories": np.asarray(optimization_histories),
     }
@@ -715,6 +788,9 @@ def run_demo(args: argparse.Namespace) -> None:
                 .cpu()
                 .numpy(),
                 "final_dose_coarse": optimization_state.dose.detach().cpu().numpy(),
+                "final_reaction_progress_coarse": (
+                    optimization_state.reaction_progress.detach().cpu().numpy()
+                ),
                 "final_doc_coarse": optimization_state.doc.detach().cpu().numpy(),
             }
         )
@@ -981,7 +1057,9 @@ def _reference_architecture_test(device: torch.device) -> dict[str, object]:
             aie_reference.REFERENCE_MODEL_PATH = original_reference_path
             aie_reference.DOC_FIT_PATH = original_calibration_path
 
-    coarse_config = build_resolution_config("coarse", 2, reference=reference)
+    coarse_config = build_resolution_config(
+        "coarse", 2, tuple(reference.native_shape), reference=reference
+    )
     coarse_params = replace(
         params, pixel_pitch_m=coarse_config.optimization_pixel_pitch_m
     )
@@ -1027,26 +1105,45 @@ def _legacy_reference_step(
         config=reference_config,
     )
     return AIEState(
-        result.o2,
-        result.tempo,
-        result.dose,
-        result.doc,
-        state.chain_growth_multiplier,
+        o2=result.o2,
+        tempo=result.tempo,
+        dose=result.dose,
+        reaction_progress=state.reaction_progress,
+        doc=result.doc,
+        chain_growth_multiplier=state.chain_growth_multiplier,
     )
 
 
 def _static_mask_equivalence_test(device: torch.device) -> float:
     model = AIEModel(device=device)
-    height = width = model.scattering_kernel_size // 2 + 3
+    largest_kernel = max(
+        model.scattering_kernel_1d.numel(),
+        model.o2_kernel_1d.numel(),
+        model.tempo_kernel_1d.numel(),
+    )
+    height = width = int(largest_kernel // 2 + 3)
     coordinates = torch.linspace(0, 1, height, device=device)
     yy, xx = torch.meshgrid(coordinates, coordinates, indexing="ij")
-    mask = 0.25 + 0.65 * torch.exp(-((xx - 0.5) ** 2 + (yy - 0.5) ** 2) / 0.08)
+    mask = 0.25 + 0.65 * torch.exp(
+        -((xx - 0.5) ** 2 + (yy - 0.5) ** 2) / 0.08
+    )
     initialized = model.initialize_state((height, width))
+    prepared = model.prepare_control(mask, initialized.shape)
+    initial_dose = 0.03 + 0.05 * xx * yy
+    effective_b = prepared.b
+    if initialized.chain_growth_multiplier is not None:
+        effective_b = effective_b * initialized.chain_growth_multiplier
+    initial_progress = (
+        effective_b
+        * initial_dose
+        / prepared.local_intensity.clamp_min(model.params.division_epsilon)
+    )
     initial = AIEState(
         o2=0.05 + 0.20 * xx,
         tempo=0.02 + 0.18 * yy,
-        dose=0.03 + 0.05 * xx * yy,
-        doc=0.01 + 0.02 * xx,
+        dose=initial_dose,
+        reaction_progress=initial_progress,
+        doc=1.0 - torch.exp(-torch.clamp(initial_progress, min=0.0)),
         chain_growth_multiplier=initialized.chain_growth_multiplier,
     )
     refactored, reference = initial, initial
@@ -1055,10 +1152,28 @@ def _static_mask_equivalence_test(device: torch.device) -> float:
         reference = _legacy_reference_step(model, reference, mask)
     maximum_error = max(
         float((actual - expected).abs().max())
-        for actual, expected in zip(refactored.tensors(), reference.tensors())
+        for actual, expected in zip(
+            refactored.reference_tensors(), reference.reference_tensors()
+        )
     )
-    for actual, expected in zip(refactored.tensors(), reference.tensors()):
+    for actual, expected in zip(
+        refactored.reference_tensors(), reference.reference_tensors()
+    ):
         torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+    effective_b = prepared.b
+    if refactored.chain_growth_multiplier is not None:
+        effective_b = effective_b * refactored.chain_growth_multiplier
+    expected_progress = (
+        effective_b
+        * refactored.dose
+        / prepared.local_intensity.clamp_min(model.params.division_epsilon)
+    )
+    torch.testing.assert_close(
+        refactored.reaction_progress,
+        expected_progress,
+        rtol=2e-5,
+        atol=2e-6,
+    )
     return maximum_error
 
 
@@ -1246,31 +1361,59 @@ def _constant_block_assertion(
 
 
 def _resolution_modes_test(device: torch.device) -> dict[str, object]:
-    """Validate native, q=2, q=3, FOV, block recovery, and native replay."""
+    """Validate dynamic native grids, coarsening, FOV, and native replay."""
 
-    target_native = torch.zeros(NATIVE_GRID, device=device)
-    target_native[0, 0] = 1.0
+    reference_params = native_aie_parameters()
+    native_model = AIEModel(reference_params, device=device)
+    native_shapes = ((300, 300), (320, 512), (256, 384))
+    native_results: dict[tuple[int, int], dict[str, object]] = {}
+    for native_shape in native_shapes:
+        target_native = torch.zeros(native_shape, device=device)
+        target_native[0, 0] = 1.0
+        native_config = build_resolution_config("native", 2, native_shape)
+        native_target = construct_optimization_target(target_native, native_config)
+        native_control = torch.full(native_shape, 0.4, device=device)
+        native_applied = recover_control_to_native(native_control, native_config)
+        native_state = native_model.initialize_state(native_shape)
+        native_state = native_model.advance(native_state, native_applied, physics_steps=1)
+        if native_target.data_ptr() != target_native.data_ptr():
+            raise AssertionError(
+                "native mode must use the original target without resampling"
+            )
+        for field in native_state.tensors():
+            if tuple(field.shape) != native_shape:
+                raise AssertionError(
+                    f"native state shape {tuple(field.shape)} != input {native_shape}"
+                )
+            if not bool(torch.isfinite(field).all()):
+                raise AssertionError("native state contains NaN or Inf")
+        if tuple(native_target.shape) != native_shape:
+            raise AssertionError("native optimization target changed input shape")
+        if tuple(native_applied.shape) != native_shape:
+            raise AssertionError("native applied control changed input shape")
+        native_results[native_shape] = {
+            "optimization_shape": native_config.optimization_shape,
+            "state_shape": tuple(native_state.shape),
+            "mask_shape": tuple(native_applied.shape),
+            "doc_shape": tuple(native_state.doc.shape),
+            "fov_yx_um": tuple(value * 1e6 for value in native_config.native_fov_m),
+        }
 
-    native_config = build_resolution_config("native", 2)
-    native_target = construct_optimization_target(target_native, native_config)
-    native_control = torch.full(NATIVE_GRID, 0.4, device=device)
-    native_applied = recover_control_to_native(native_control, native_config)
-    if native_target.data_ptr() != target_native.data_ptr():
-        raise AssertionError("native mode must use the original target without resampling")
-    if tuple(native_target.shape) != NATIVE_GRID or tuple(native_applied.shape) != NATIVE_GRID:
-        raise AssertionError("native target and applied mask must remain 300 x 300")
-
-    coarse_controls: dict[int, torch.Tensor] = {}
     kernel_sizes: dict[int, int] = {}
-    for factor, expected_shape, expected_fraction in (
-        (2, (150, 150), 0.25),
-        (3, (100, 100), 1.0 / 9.0),
-    ):
-        config = build_resolution_config("coarse", factor)
+    coarse_reaction_ranges: dict[int, tuple[float, float]] = {}
+    coarse_cases = (
+        (2, (320, 512), (160, 256), 0.25),
+        (3, (300, 300), (100, 100), 1.0 / 9.0),
+    )
+    for factor, native_shape, expected_shape, expected_fraction in coarse_cases:
+        target_native = torch.zeros(native_shape, device=device)
+        target_native[0, 0] = 1.0
+        config = build_resolution_config("coarse", factor, native_shape)
         target_coarse = construct_optimization_target(target_native, config)
         if tuple(target_coarse.shape) != expected_shape:
             raise AssertionError(
-                f"q={factor} target shape {tuple(target_coarse.shape)} != {expected_shape}"
+                f"q={factor} target shape {tuple(target_coarse.shape)} != "
+                f"{expected_shape}"
             )
         torch.testing.assert_close(
             target_coarse[0, 0],
@@ -1285,22 +1428,48 @@ def _resolution_modes_test(device: torch.device) -> dict[str, object]:
         ).reshape(expected_shape)
         coarse = coarse / max(float(coarse.max()), 1.0)
         recovered = recover_control_to_native(coarse, config)
-        if tuple(recovered.shape) != NATIVE_GRID:
-            raise AssertionError(f"q={factor} recovery did not produce 300 x 300")
+        if tuple(recovered.shape) != native_shape:
+            raise AssertionError(
+                f"q={factor} recovery shape {tuple(recovered.shape)} != "
+                f"native shape {native_shape}"
+            )
         _constant_block_assertion(coarse, recovered, factor)
-        coarse_controls[factor] = coarse
         coarse_model = AIEModel(
             replace(
-                native_aie_parameters(),
+                reference_params,
                 pixel_pitch_m=config.optimization_pixel_pitch_m,
             ),
             device=device,
         )
         kernel_sizes[factor] = coarse_model.scattering_kernel_size
+        coarse_state = coarse_model.initialize_state(expected_shape)
+        full_coarse_control = torch.ones(expected_shape, device=device)
+        full_coarse_prepared = coarse_model.prepare_control(
+            full_coarse_control, coarse_state.shape
+        )
+        inhibitor_energy = (
+            coarse_model.params.o2_inhibition_mj_cm2
+            + coarse_model.params.tempo_inhibition_mj_cm2
+        )
+        steps_through_inhibition = (
+            math.ceil(inhibitor_energy / float(full_coarse_prepared.energy.min()))
+            + 1
+        )
+        coarse_state = coarse_model.advance(
+            coarse_state,
+            full_coarse_control,
+            physics_steps=steps_through_inhibition,
+        )
+        coarse_reaction_ranges[factor] = (
+            float(coarse_state.reaction_progress.min()),
+            float(coarse_state.reaction_progress.max()),
+        )
+        if coarse_reaction_ranges[factor][1] <= 0:
+            raise AssertionError(
+                f"q={factor} reaction progress did not survive coarse advancement"
+            )
 
-    native_model = AIEModel(native_aie_parameters(), device=device)
     kernel_sizes[1] = native_model.scattering_kernel_size
-    reference_params = native_aie_parameters()
     for factor, kernel_size in kernel_sizes.items():
         pitch = reference_params.native_pixel_pitch_m * factor
         raw_size = int(reference_params.scattering_blur_size_m / pitch)
@@ -1311,35 +1480,83 @@ def _resolution_modes_test(device: torch.device) -> dict[str, object]:
                 f"reference formula result {expected_kernel_size}"
             )
 
-    replay_config = build_resolution_config("coarse", 3)
-    replay_masks = [
-        recover_control_to_native(coarse_controls[3] * level, replay_config)
-        for level in (0.5, 0.75)
-    ]
+    rectangular_shape = (320, 512)
+    replay_config = build_resolution_config("coarse", 2, rectangular_shape)
+    full_native_control = recover_control_to_native(
+        torch.ones(replay_config.optimization_shape, device=device),
+        replay_config,
+    )
+    native_full_step_energy = (
+        reference_params.intensity_mw_cm2 * reference_params.dt
+    )
+    replay_step_count = (
+        math.ceil(
+            (
+                reference_params.o2_inhibition_mj_cm2
+                + reference_params.tempo_inhibition_mj_cm2
+            )
+            / native_full_step_energy
+        )
+        + 1
+    )
+    replay_masks = [full_native_control] * replay_step_count
     replay_state = replay_native_controls(
-        native_aie_parameters(), replay_masks, physics_steps_per_control=1, device=device
+        reference_params,
+        rectangular_shape,
+        replay_masks,
+        physics_steps_per_control=1,
+        device=device,
     )
     for field in replay_state.tensors():
-        if tuple(field.shape) != NATIVE_GRID:
-            raise AssertionError("native replay state field is not 300 x 300")
+        if tuple(field.shape) != rectangular_shape:
+            raise AssertionError(
+                f"native replay state shape {tuple(field.shape)} != "
+                f"{rectangular_shape}"
+            )
         if not bool(torch.isfinite(field).all()):
             raise AssertionError("native replay state contains NaN or Inf")
     if float(replay_state.doc.min()) < 0 or float(replay_state.doc.max()) > 1:
         raise AssertionError("native replay DoC left the valid [0, 1] range")
+    if float(replay_state.reaction_progress.max()) <= 0:
+        raise AssertionError("native replay reset or lost reaction progress")
 
     try:
-        require_native_target(torch.zeros((299, 300), device=device))
+        build_resolution_config("coarse", 3, rectangular_shape)
     except ValueError as error:
-        if "never resized, cropped, or padded" not in str(error):
-            raise AssertionError(f"unexpected target shape error: {error}") from error
+        if "must divide both dimensions" not in str(error):
+            raise AssertionError(f"unexpected non-divisible-grid error: {error}") from error
+        nondivisible_error = str(error)
     else:
-        raise AssertionError("non-300 x 300 target was not rejected")
+        raise AssertionError("320 x 512 with q=3 was not rejected")
+
+    for invalid_target, expected_message in (
+        (torch.zeros(12, device=device), "2D grayscale"),
+        (torch.empty((0, 12), device=device), "dimensions must be positive"),
+        (torch.full((8, 9), torch.nan, device=device), "NaN or Inf"),
+        (torch.full((8, 9), 1.1, device=device), "normalized to [0, 1]"),
+    ):
+        try:
+            require_native_target(invalid_target)
+        except ValueError as error:
+            if expected_message not in str(error):
+                raise AssertionError(f"unexpected target validation error: {error}") from error
+        else:
+            raise AssertionError("invalid native target was not rejected")
 
     return {
-        "q2_shape": (150, 150),
+        "native_results": native_results,
+        "q2_shape": (160, 256),
         "q3_shape": (100, 100),
-        "native_fov_um": native_config.native_fov_m[0] * 1e6,
+        "rectangular_fov_yx_um": native_results[rectangular_shape]["fov_yx_um"],
         "kernel_sizes": kernel_sizes,
+        "coarse_reaction_ranges": coarse_reaction_ranges,
+        "native_replay_steps": replay_step_count,
+        "native_replay_shape": tuple(replay_state.shape),
+        "nondivisible_error": nondivisible_error,
+        "replay_reaction_range": (
+            float(replay_state.reaction_progress.min()),
+            float(replay_state.reaction_progress.max()),
+        ),
         "replay_doc_range": (
             float(replay_state.doc.min()),
             float(replay_state.doc.max()),
@@ -1353,33 +1570,54 @@ def _gif_visualization_test(device: torch.device) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="aie_doc_gif_test_") as temporary_dir:
         output_dir = Path(temporary_dir)
         results: dict[str, object] = {}
-        for label, shape, levels in (
+        gif_shapes = {
+            "native_300x300": (300, 300),
+            "native_320x512": (320, 512),
+            "native_256x384": (256, 384),
+            "coarse_160x256": (160, 256),
+        }
+        for label, shape in gif_shapes.items():
+            target_path = output_dir / f"target_{label}.png"
+            Image.fromarray(np.zeros(shape, dtype=np.uint8), mode="L").save(target_path)
+            loaded_target = load_normalized_target(target_path)
+            require_native_target(loaded_target, target_path)
+            if tuple(loaded_target.shape) != shape:
+                raise AssertionError(
+                    f"target loader changed {shape} to {tuple(loaded_target.shape)}"
+                )
             # Identical frames confirm that inhibited zero-DoC time steps are
             # retained instead of being merged by the GIF encoder.
-            ("native", NATIVE_GRID, (0.0, 0.0, 0.0)),
-            ("coarse", (150, 150), (0.0, 0.25, 0.5)),
-        ):
+            levels = (0.0, 0.25, 0.5)
             frame_paths: list[Path] = []
             for frame_index, level in enumerate(levels):
                 doc = torch.full(shape, level, device=device)
                 frame_path = output_dir / f"doc_frame_{label}_{frame_index:03d}.png"
                 save_doc_frame(doc, frame_path, shape)
                 frame_paths.append(frame_path)
+            with Image.open(frame_paths[-1]) as saved_frame:
+                saved_shape = (saved_frame.height, saved_frame.width)
+            if saved_shape != shape:
+                raise AssertionError(
+                    f"DoC PNG changed {shape} to {saved_shape}"
+                )
             gif_path = output_dir / f"doc_evolution_{label}.gif"
             save_gif_from_frames(frame_paths, gif_path, duration_ms=300)
             validate_gif(gif_path, len(levels), shape)
             results[f"{label}_frames"] = len(levels)
             results[f"{label}_shape"] = shape
 
-        invalid_doc = torch.zeros(NATIVE_GRID, device=device)
+        invalid_shape = (17, 23)
+        invalid_doc = torch.zeros(invalid_shape, device=device)
         invalid_doc[0, 0] = torch.nan
         try:
-            validate_doc_field(invalid_doc, NATIVE_GRID)
+            validate_doc_field(invalid_doc, invalid_shape)
         except ValueError as error:
             if "NaN or Inf" not in str(error):
                 raise AssertionError(f"unexpected DoC validation error: {error}") from error
         else:
             raise AssertionError("non-finite DoC frame was not rejected")
+        results["shapes"] = gif_shapes
+        results["frames_per_gif"] = 3
         return results
 
 
@@ -1427,22 +1665,34 @@ def run_smoke_tests() -> None:
     print(f"[pass] MPC loss {initial_loss:.6e}->{final_loss:.6e}")
     resolution = _resolution_modes_test(device)
     print(
-        f"[pass] resolution grids native={NATIVE_GRID} "
-        f"q=2->{resolution['q2_shape']} q=3->{resolution['q3_shape']}"
+        "[pass] dynamic native grids "
+        f"{tuple(resolution['native_results'])}; "
+        f"320x512 q=2->{resolution['q2_shape']} "
+        f"300x300 q=3->{resolution['q3_shape']}"
     )
     print(
-        f"[pass] physical FOV={resolution['native_fov_um']:.6f} um per axis; "
+        "[pass] 320x512 physical FOV (y, x)="
+        f"{resolution['rectangular_fov_yx_um']} um; "
         f"scattering kernels={resolution['kernel_sizes']}"
     )
     print(
-        f"[pass] native replay shape={NATIVE_GRID} finite=True "
+        "[pass] non-divisible coarse grid rejected: "
+        f"{resolution['nondivisible_error']}"
+    )
+    print(
+        "[pass] coarse reaction-progress state finite/nonzero "
+        f"ranges={resolution['coarse_reaction_ranges']}"
+    )
+    print(
+        f"[pass] native replay shape={resolution['native_replay_shape']} finite=True "
+        f"steps={resolution['native_replay_steps']} "
+        f"reaction_progress_range={resolution['replay_reaction_range']} "
         f"DoC_range={resolution['replay_doc_range']}"
     )
     gif_results = _gif_visualization_test(device)
     print(
-        f"[pass] DoC GIFs native={gif_results['native_frames']} frames at "
-        f"{gif_results['native_shape']}, coarse={gif_results['coarse_frames']} "
-        f"frames at {gif_results['coarse_shape']}, duration=300ms loop=continuous"
+        f"[pass] DoC GIFs {gif_results['frames_per_gif']} frames each at "
+        f"{gif_results['shapes']}, duration=300ms loop=continuous"
     )
 
 
@@ -1452,7 +1702,10 @@ def parse_args() -> argparse.Namespace:
         "--target",
         type=Path,
         default=Path("circle.png"),
-        help="300 x 300 target; unqualified names resolve inside GEO/",
+        help=(
+            "2D grayscale target whose exact dimensions define the native grid; "
+            "unqualified names resolve inside GEO/"
+        ),
     )
     parser.add_argument(
         "--output-dir", type=Path, default=REPOSITORY_DIR / "mpc_output"

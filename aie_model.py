@@ -1,9 +1,12 @@
 """Differentiable state-space form of the legacy AIE curing model.
 
-The equations mirror ``AIE_TEMPOv1.1.py`` and every effective calibration is
-loaded through the read-only AST adapter in ``aie_reference.py``. Projector
-masks are normalized to ``[0, 1]``; the adapter validates the legacy 255-level
-grayscale convention without importing or executing the reference script.
+The inhibition, diffusion, optics, Dose, and static-mask DoC behavior mirror
+``AIE_TEMPOv1.1.py`` and every effective calibration is loaded through the
+read-only AST adapter in ``aie_reference.py``. For time-varying MPC masks, a
+cumulative reaction-progress state extends the static DoC law without
+reinterpreting historical Dose. Projector masks are normalized to ``[0, 1]``;
+the adapter validates the legacy 255-level grayscale convention without
+importing or executing the reference script.
 """
 
 from __future__ import annotations
@@ -18,6 +21,13 @@ from torch import nn
 
 from aie_fine_grid import expand_projector_mask
 from aie_reference import load_reference_config
+
+
+DOC_HISTORY_MODE = "incremental_reaction_progress_v1"
+DOC_HISTORY_DESCRIPTION = (
+    "MPC-side time-varying extension; exactly reduces to the reference B/intensity "
+    "DoC law at constant intensity and is not separately experimentally calibrated"
+)
 
 
 @dataclass(frozen=True)
@@ -175,6 +185,8 @@ class AIEParameters:
             "mask_grayscale_max": self.mask_grayscale_max,
             "doc_model_id": self.doc_model_id,
             "doc_model_formula": self.doc_model_formula,
+            "doc_history_mode": DOC_HISTORY_MODE,
+            "doc_history_description": DOC_HISTORY_DESCRIPTION,
             "doc_fit_applied_to_governing_law": (
                 self.doc_fit_applied_to_governing_law
             ),
@@ -276,6 +288,7 @@ class AIEState:
     o2: torch.Tensor
     tempo: torch.Tensor
     dose: torch.Tensor
+    reaction_progress: torch.Tensor
     doc: torch.Tensor
     chain_growth_multiplier: torch.Tensor | None = None
 
@@ -295,11 +308,29 @@ class AIEState:
             o2=self.o2.detach(),
             tempo=self.tempo.detach(),
             dose=self.dose.detach(),
+            reaction_progress=self.reaction_progress.detach(),
             doc=self.doc.detach(),
             chain_growth_multiplier=multiplier,
         )
 
-    def tensors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def tensors(
+        self,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """Return every spatial dynamic-state field, including cure history."""
+
+        return self.o2, self.tempo, self.dose, self.reaction_progress, self.doc
+
+    def reference_tensors(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return fields that also exist in the collaborator reference model."""
+
         return self.o2, self.tempo, self.dose, self.doc
 
 
@@ -442,6 +473,7 @@ class AIEModel(nn.Module):
             o2=o2,
             tempo=tempo,
             dose=zeros.clone(),
+            reaction_progress=zeros.clone(),
             doc=zeros.clone(),
             chain_growth_multiplier=chain_growth_multiplier,
         )
@@ -542,28 +574,34 @@ class AIEModel(nn.Module):
             state.dose + control.energy - o2_diffused - tempo_diffused,
             state.dose,
         )
-        # The legacy denominator is intensity clamped through the mask at
-        # 1e-12.  The second clamp guarantees finite behavior for any valid
-        # floating dtype and avoids the legacy zero-intensity NaN/Inf hazard.
+        # The reference Dose bookkeeping is retained verbatim above.  Cure
+        # history uses the increment produced by this step rather than
+        # reinterpreting all historical Dose through the current intensity.
+        delta_dose = dose_next - state.dose
         safe_intensity = control.local_intensity.clamp_min(
             self.params.division_epsilon
         )
-        # With a time-varying mask, v1.1's static-mask formula necessarily
-        # interprets accumulated dose using the *current* local intensity.
-        # Keep that literal extension here rather than inventing a new kinetic
-        # state or exposure law for this first controller.
-        exposure_time = dose_next / safe_intensity
         effective_b = control.b
         if state.chain_growth_multiplier is not None:
             effective_b = effective_b * state.chain_growth_multiplier
+        reaction_increment = effective_b * delta_dose / safe_intensity
+        reaction_progress_candidate = (
+            state.reaction_progress + reaction_increment
+        )
+        reaction_progress_next = torch.where(
+            curing,
+            reaction_progress_candidate,
+            state.reaction_progress,
+        )
         doc_candidate = 1.0 - torch.exp(
-            -torch.clamp(effective_b * exposure_time, min=0.0)
+            -torch.clamp(reaction_progress_next, min=0.0)
         )
         doc_next = torch.where(curing, doc_candidate, state.doc)
         return AIEState(
             o2=o2_next,
             tempo=tempo_next,
             dose=dose_next,
+            reaction_progress=reaction_progress_next,
             doc=doc_next,
             chain_growth_multiplier=state.chain_growth_multiplier,
         )
@@ -644,7 +682,10 @@ class AIEModel(nn.Module):
         if len(reference_shape) != 2:
             raise ValueError(f"state fields must be 2D, got shape {reference_shape}")
         self._validate_spatial_shape(reference_shape)
-        for name, field in zip(("o2", "tempo", "dose", "doc"), state.tensors()):
+        for name, field in zip(
+            ("o2", "tempo", "dose", "reaction_progress", "doc"),
+            state.tensors(),
+        ):
             if tuple(field.shape) != reference_shape:
                 raise ValueError(
                     f"state.{name} has shape {tuple(field.shape)}, expected {reference_shape}"

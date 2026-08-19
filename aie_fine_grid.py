@@ -11,7 +11,7 @@ def _validate_2d(tensor: torch.Tensor, name: str) -> None:
 
 def initialize_projector_mask(
     target: torch.Tensor,
-    projector_shape: tuple[int, int] = (300, 300),
+    projector_shape: tuple[int, int],
     refinement: int = 2,
 ) -> torch.Tensor:
     """Initialize each projector pixel from its fine-grid block average."""
