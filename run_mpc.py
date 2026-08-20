@@ -41,8 +41,18 @@ from aie_model import (
 )
 from aie_mpc import DifferentiableMPC
 import aie_reference
-from aie_reference import load_reference_config, reference_step_torch
-from doc_reference import DoCReferenceCurve, load_doc_reference
+from aie_reference import (
+    load_reference_config,
+    load_reference_config_for_condition,
+    reference_step_torch,
+)
+from doc_reference import (
+    EXPECTED_CONDITIONS,
+    PRODUCTION_REFERENCE_METHOD,
+    DoCReferenceCurve,
+    available_doc_reference_ids,
+    load_doc_reference,
+)
 from mpc_metrics import (
     GEOMETRY_THRESHOLD_NOTE,
     calculate_final_metrics,
@@ -52,6 +62,58 @@ from mpc_metrics import (
 
 REPOSITORY_DIR = Path(__file__).resolve().parent
 GEO_DIR = REPOSITORY_DIR / "GEO"
+
+
+def assess_reference_physics_match(
+    reference_curve: DoCReferenceCurve, params: AIEParameters
+) -> dict[str, object]:
+    """Audit whether authoritative forward physics matches a tracking condition."""
+
+    condition = reference_curve.metadata["condition"]
+    intensity = float(condition["intensity_mw_cm2"])
+    tempo_mM = float(condition["tempo_concentration_mM"])
+    missing: list[str] = []
+    if not math.isclose(
+        params.intensity_mw_cm2, intensity, rel_tol=0.0, abs_tol=1e-12
+    ):
+        missing.append(
+            f"authoritative intensity={intensity:g} mW/cm^2 configuration"
+        )
+
+    normalized_b_label = params.b_condition_label.lower().replace(" ", "")
+    if math.isclose(tempo_mM, 0.0, rel_tol=0.0, abs_tol=1e-12):
+        if not math.isclose(
+            params.tempo_inhibition_mj_cm2, 0.0, rel_tol=0.0, abs_tol=1e-12
+        ):
+            missing.append("zero-TEMPO inhibition configuration")
+        if "0mmtempo" not in normalized_b_label:
+            missing.append("0 mM TEMPO B/intensity coefficients")
+    elif math.isclose(tempo_mM, 5.0, rel_tol=0.0, abs_tol=1e-12):
+        if params.tempo_concentration_mM is None or not math.isclose(
+            params.tempo_concentration_mM, 5.0, rel_tol=0.0, abs_tol=1e-12
+        ):
+            missing.append("explicit authoritative TEMPO_concentration_mM=5 condition")
+        if params.total_inhibition_mj_cm2 <= params.o2_inhibition_mj_cm2:
+            missing.append("validated 5 mM total/TEMPO inhibition energy")
+        if "5mmtempo" not in normalized_b_label:
+            missing.append("validated 5 mM B/intensity kinetic coefficients")
+    else:
+        missing.append(f"authoritative {tempo_mM:g} mM TEMPO configuration")
+
+    matched = not missing
+    return {
+        "matched": matched,
+        "tracking_reference_id": reference_curve.reference_id,
+        "tracking_condition": condition,
+        "forward_intensity_mw_cm2": params.intensity_mw_cm2,
+        "forward_tempo_concentration_mM": params.tempo_concentration_mM,
+        "forward_o2_inhibition_mj_cm2": params.o2_inhibition_mj_cm2,
+        "forward_total_inhibition_mj_cm2": params.total_inhibition_mj_cm2,
+        "forward_tempo_inhibition_mj_cm2": params.tempo_inhibition_mj_cm2,
+        "forward_tempo_diffusivity_m2_s": params.tempo_diffusivity_m2_s,
+        "forward_b_condition_label": params.b_condition_label,
+        "missing_for_physical_match": missing,
+    }
 
 
 @dataclass(frozen=True)
@@ -380,10 +442,13 @@ def replay_native_controls(
     physics_steps_per_control: int,
     device: torch.device,
     doc_frame_callback: Callable[[int, torch.Tensor], None] | None = None,
+    authoritative_reference: object | None = None,
 ) -> AIEState:
     """Replay recovered masks through a fresh native model without optimization."""
 
-    current_reference_params = AIEParameters.from_reference()
+    current_reference_params = AIEParameters.from_reference(
+        authoritative_reference or load_reference_config()
+    )
     if native_params != current_reference_params:
         raise ValueError(
             "native replay parameters must exactly match the current "
@@ -516,7 +581,8 @@ def save_tracking_plot(
     axis.set_ylim(0.0, 1.02)
     axis.set_xlabel("Absolute process time (s)")
     axis.set_ylabel("Degree of conversion")
-    axis.set_title("DoC trajectory tracking: 0 mM TEMPO, 30 mW/cm²")
+    title = reference_curve.metadata["condition_label"].replace("cm^2", r"cm$^2$")
+    axis.set_title(f"DoC trajectory tracking: {title}")
     axis.grid(alpha=0.25)
     axis.legend()
     figure.tight_layout()
@@ -530,6 +596,7 @@ def _format_optional(value: float | None, suffix: str = "") -> str:
 
 def print_metrics_summary(
     *,
+    reference_id: str,
     total_time_s: float,
     tracking: dict[str, float],
     reference_final_doc: float,
@@ -545,6 +612,7 @@ def print_metrics_summary(
     components = final_metrics["components"]
     holes = final_metrics["holes"]
     print("\n=== Closed-loop tracking ===")
+    print(f"reference ID:              {reference_id}")
     print(f"total time:                {total_time_s:.2f} s")
     print(f"tracking RMSE:             {tracking['rmse']:.6f}")
     print(f"tracking MAE:              {tracking['mae']:.6f}")
@@ -695,7 +763,9 @@ def _print_parameter_provenance(params: AIEParameters) -> None:
             f"{params.doc_fit_b:.12g}, {params.doc_fit_c:.12g}"
         )
     else:
-        print("DoC fit condition: none selected; no numeric TEMPO condition is active")
+        print(
+            "DoC fit condition: none selected from legacy doc_fit_parameters.json"
+        )
     if not params.doc_fit_applied_to_governing_law:
         print("DoC fit usage: provenance only; governing B/intensity law preserved")
 
@@ -703,7 +773,8 @@ def _print_parameter_provenance(params: AIEParameters) -> None:
 def run_demo(args: argparse.Namespace) -> None:
     """Run native MPC or coarse MPC followed by required native replay."""
 
-    reference = load_reference_config()
+    doc_reference = load_doc_reference(args.doc_reference)
+    reference = load_reference_config_for_condition(doc_reference.reference_id)
     native_params = native_aie_parameters(reference)
     control_dt_s = native_params.dt * args.physics_steps_per_control
     control_steps, total_time_s = resolve_control_timing(
@@ -713,7 +784,16 @@ def run_demo(args: argparse.Namespace) -> None:
     )
     args.control_steps = control_steps
     args.total_time = total_time_s
-    doc_reference = load_doc_reference(args.doc_reference)
+    physics_match = assess_reference_physics_match(doc_reference, native_params)
+    physics_match["override_used"] = bool(args.allow_reference_physics_mismatch)
+    if not physics_match["matched"] and not args.allow_reference_physics_mismatch:
+        missing = "; ".join(physics_match["missing_for_physical_match"])
+        raise ValueError(
+            f"tracking reference {doc_reference.reference_id} does not have a "
+            f"validated matching authoritative forward-physics configuration: "
+            f"{missing}. Use --allow-reference-physics-mismatch only for an "
+            "explicit research/debug comparison."
+        )
     target_path = resolve_target_path(args.target)
     target_native = load_normalized_target(target_path)
     require_native_target(target_native, target_path)
@@ -735,12 +815,34 @@ def run_demo(args: argparse.Namespace) -> None:
         )
     )
     _print_parameter_provenance(native_params)
+    condition = doc_reference.metadata["condition"]
+    thresholds = doc_reference.metadata["threshold_times_s"]
+    print(f"DoC tracking reference ID: {doc_reference.reference_id}")
     print(
-        "DoC trajectory reference: "
-        f"{doc_reference.metadata['reference_id']} "
-        f"({doc_reference.metadata.get('condition_label', '30 mW/cm^2, 0 mM TEMPO')})"
+        "DoC tracking condition: "
+        f"{condition['intensity_mw_cm2']:g} mW/cm^2, "
+        f"{condition['tempo_concentration_mM']:g} mM TEMPO"
     )
-    print(f"DoC reference SHA256: {doc_reference.source_sha256}")
+    print(
+        "DoC reference production model: "
+        f"{doc_reference.metadata['selected_fit_model']} "
+        f"({doc_reference.metadata['production_reference_method']})"
+    )
+    print(f"DoC reference saturation time: {doc_reference.saturation_time_s:.3f} s")
+    print(
+        "DoC reference t10/t50/t90: "
+        f"{thresholds['t10_s']:.3f}/{thresholds['t50_s']:.3f}/"
+        f"{thresholds['t90_s']:.3f} s"
+    )
+    print(f"DoC reference artifact SHA256: {doc_reference.source_sha256}")
+    if not physics_match["matched"]:
+        print("\n!!!!!!!!!!!!!!!! PHYSICS/REFERENCE MISMATCH !!!!!!!!!!!!!!!!")
+        print(f"tracking reference = {doc_reference.reference_id}")
+        print("forward physics != validated matching experimental condition")
+        for item in physics_match["missing_for_physical_match"]:
+            print(f"missing: {item}")
+        print("override: --allow-reference-physics-mismatch (research/debug only)")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
     print(
         "DoC reference use: control target only; AIE/reaction_progress forward "
         "physics unchanged"
@@ -906,6 +1008,7 @@ def run_demo(args: argparse.Namespace) -> None:
             args.physics_steps_per_control,
             device,
             doc_frame_callback=save_native_replay_frame,
+            authoritative_reference=reference,
         )
     else:
         native_state = optimization_state
@@ -989,6 +1092,7 @@ def run_demo(args: argparse.Namespace) -> None:
             "sha256": native_params.reference_model_sha256,
             "history_mode": DOC_HISTORY_MODE,
             "history_description": DOC_HISTORY_DESCRIPTION,
+            "tracking_reference_physics_match": physics_match,
         },
         "target": {
             "name": target_path.name,
@@ -1061,6 +1165,13 @@ def run_demo(args: argparse.Namespace) -> None:
             json.dumps(doc_reference.provenance_metadata(), sort_keys=True)
         ),
         "doc_reference_source_sha256": np.asarray(doc_reference.source_sha256),
+        "doc_reference_id": np.asarray(doc_reference.reference_id),
+        "doc_reference_condition_json": np.asarray(
+            json.dumps(doc_reference.metadata["condition"], sort_keys=True)
+        ),
+        "reference_physics_match_json": np.asarray(
+            json.dumps(physics_match, sort_keys=True)
+        ),
         "metrics_json": np.asarray(json.dumps(metrics_document, sort_keys=True)),
         "component_metrics_json": np.asarray(
             json.dumps(final_metrics["component_rows"], sort_keys=True)
@@ -1139,6 +1250,7 @@ def run_demo(args: argparse.Namespace) -> None:
     np.savez_compressed(args.output_dir / results_name, **common_results)
 
     print_metrics_summary(
+        reference_id=doc_reference.reference_id,
         total_time_s=total_time_s,
         tracking=tracking,
         reference_final_doc=reference_final_doc,
@@ -1616,7 +1728,7 @@ def _physics_synchronization_test(device: torch.device) -> dict[str, object]:
     )
 
     default_physics_steps = 10
-    default_horizon = 4
+    default_horizon = 8
     control_dt = default_physics_steps * reference.dt
     prediction_horizon = default_horizon * control_dt
     if control_dt != model.params.dt * default_physics_steps:
@@ -1707,49 +1819,119 @@ def _mpc_optimization_test(device: torch.device) -> tuple[float, float]:
 
 
 def _doc_reference_curve_test() -> dict[str, object]:
-    """Validate loader schema, monotonicity, interpolation, and endpoint hold."""
+    """Validate both conditions, raw-tail handling, interpolation, and selection."""
 
-    reference = load_doc_reference()
-    if reference.metadata["schema_version"] != 1:
-        raise AssertionError("unexpected DoC reference schema")
-    if reference.time_s[0] != 0.0 or reference.time_s[-1] != 20.0:
-        raise AssertionError("DoC reference does not span exactly 0 to 20 s")
-    if not np.isfinite(reference.doc_reference).all():
-        raise AssertionError("DoC reference contains NaN or Inf")
-    if np.any(np.diff(reference.doc_reference) < -1e-10):
-        raise AssertionError("DoC reference is not monotonic nondecreasing")
-    left_index = int(np.searchsorted(reference.time_s, 2.025) - 1)
-    expected_midpoint = 0.5 * (
-        reference.doc_reference[left_index]
-        + reference.doc_reference[left_index + 1]
-    )
-    if not math.isclose(
-        float(reference.at(2.025)),
-        float(expected_midpoint),
+    ids = available_doc_reference_ids()
+    if ids != ("30mW_0mM", "30mW_5mM"):
+        raise AssertionError(f"unexpected DoC reference IDs: {ids}")
+    references = {reference_id: load_doc_reference(reference_id) for reference_id in ids}
+    block_counts: dict[str, int] = {}
+    for reference_id, reference in references.items():
+        if reference.metadata["schema_version"] != 2:
+            raise AssertionError("unexpected DoC reference schema")
+        if reference.time_s[0] != 0.0 or reference.time_s[-1] != 20.0:
+            raise AssertionError("DoC reference does not span exactly 0 to 20 s")
+        if not np.isfinite(reference.doc_reference).all():
+            raise AssertionError("DoC reference contains NaN or Inf")
+        if np.any(np.diff(reference.doc_reference) < -1e-12):
+            raise AssertionError("DoC reference is not monotonic nondecreasing")
+        if np.min(reference.doc_reference) < 0 or np.max(reference.doc_reference) > 1:
+            raise AssertionError("DoC reference left [0,1]")
+        if (
+            reference.metadata["production_reference_method"]
+            != PRODUCTION_REFERENCE_METHOD
+            or reference.metadata["selected_fit_model"]
+            != "isotonic_monotonic_benchmark"
+        ):
+            raise AssertionError("production reference is not equal-replicate isotonic")
+        if reference.metadata["equal_replicate_construction"][
+            "replicate_weights"
+        ] != {"T1": 0.5, "T2": 0.5}:
+            raise AssertionError("T1 and T2 do not have equal production influence")
+        if reference.metadata["compact_diagnostic_fit"]["model_id"] != (
+            "delayed_avrami_fixed_plateau"
+        ):
+            raise AssertionError("compact Avrami diagnostic was not preserved")
+        block_counts[reference_id] = int(
+            reference.metadata["isotonic_regression"]["block_count"]
+        )
+        plateau = reference.time_s >= reference.saturation_time_s - 1e-12
+        if not np.all(reference.doc_reference[plateau] == 1.0):
+            raise AssertionError("DoC reference does not stay exactly one after saturation")
+        for replicate in reference.metadata["replicate_fits"].values():
+            if replicate["excluded_post_saturation_sample_count"] <= 0:
+                raise AssertionError("post-saturation raw tail was not excluded")
+            if not replicate["raw_normalized_final"] < 0.1:
+                raise AssertionError("test data do not contain the audited declining tail")
+            errors = [
+                replicate["fit"]["threshold_time_errors_s"][key]
+                for key in ("t10_s", "t30_s", "t50_s", "t90_s", "t95_s")
+            ]
+            if max(abs(value) for value in errors if value is not None) > 0.20:
+                raise AssertionError("raw-versus-fit threshold timing exceeds 0.20 s")
+        for comparison in reference.metadata[
+            "production_threshold_comparison_s"
+        ].values():
+            errors = comparison["production_minus_raw_errors_s"]
+            if max(
+                abs(errors[key])
+                for key in ("t10_s", "t30_s", "t50_s", "t90_s", "t95_s")
+                if errors[key] is not None
+            ) > 0.20:
+                raise AssertionError(
+                    "raw-versus-isotonic production timing exceeds 0.20 s"
+                )
+        left_index = int(np.searchsorted(reference.time_s, 2.025) - 1)
+        expected_midpoint = 0.5 * (
+            reference.doc_reference[left_index]
+            + reference.doc_reference[left_index + 1]
+        )
+        if not math.isclose(
+            float(reference.at(2.025)),
+            float(expected_midpoint),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise AssertionError("DoC reference linear interpolation is incorrect")
+        if reference.at(-1.0) != reference.doc_reference[0]:
+            raise AssertionError("DoC reference does not hold its first endpoint")
+        if reference.at(25.0) != reference.doc_reference[-1]:
+            raise AssertionError("DoC reference does not hold its final plateau")
+    if math.isclose(
+        float(references["30mW_0mM"].at(5.0)),
+        float(references["30mW_5mM"].at(5.0)),
         rel_tol=0.0,
-        abs_tol=1e-12,
+        abs_tol=1e-3,
     ):
-        raise AssertionError("DoC reference linear interpolation is incorrect")
-    if reference.at(-1.0) != reference.doc_reference[0]:
-        raise AssertionError("DoC reference does not hold its first endpoint")
-    if reference.at(25.0) != reference.doc_reference[-1]:
-        raise AssertionError("DoC reference does not hold its final plateau")
+        raise AssertionError("switching reference condition did not change r(t)")
+    try:
+        load_doc_reference("not_a_condition")
+    except ValueError as error:
+        if "available IDs" not in str(error):
+            raise AssertionError(f"unclear wrong-ID error: {error}") from error
+    else:
+        raise AssertionError("unknown DoC reference ID was accepted")
     with tempfile.TemporaryDirectory() as directory:
         invalid_path = Path(directory) / "invalid_reference.json"
-        invalid = json.loads(json.dumps(reference.metadata))
-        invalid["condition"]["intensity_mw_cm2"] = 20.0
+        invalid = json.loads(Path(references["30mW_0mM"].source_path).read_text())
+        invalid["references"]["30mW_0mM"]["condition"]["intensity_mw_cm2"] = 20.0
         invalid_path.write_text(json.dumps(invalid), encoding="utf-8")
         try:
-            load_doc_reference(invalid_path)
+            load_doc_reference("30mW_0mM", invalid_path)
         except ValueError as error:
             if "30" not in str(error):
                 raise AssertionError(f"unexpected condition validation error: {error}")
         else:
             raise AssertionError("incorrect DoC reference condition was accepted")
     return {
-        "samples": int(reference.time_s.size),
-        "final_doc": reference.final_doc,
-        "interpolated_2p025": float(reference.at(2.025)),
+        "ids": ids,
+        "samples": int(references["30mW_0mM"].time_s.size),
+        "final_doc": references["30mW_0mM"].final_doc,
+        "condition_delta_at_5s": float(
+            references["30mW_0mM"].at(5.0)
+            - references["30mW_5mM"].at(5.0)
+        ),
+        "block_counts": block_counts,
     }
 
 
@@ -1808,6 +1990,46 @@ def _trajectory_tracking_construction_test(device: torch.device) -> dict[str, ob
         "stage_times": stage_times.tolist(),
         "stage_reference": stage_reference.tolist(),
         "gradient_norm": float(controls.grad.norm()),
+    }
+
+
+def _reference_physics_condition_test() -> dict[str, object]:
+    """Verify both condition selectors and rejection of an unselected mixture."""
+
+    zero_reference = load_doc_reference("30mW_0mM")
+    five_reference = load_doc_reference("30mW_5mM")
+    zero_params = AIEParameters.from_reference(
+        load_reference_config_for_condition("30mW_0mM")
+    )
+    five_params = AIEParameters.from_reference(
+        load_reference_config_for_condition("30mW_5mM")
+    )
+    zero_match = assess_reference_physics_match(zero_reference, zero_params)
+    five_match = assess_reference_physics_match(five_reference, five_params)
+    if not zero_match["matched"] or not five_match["matched"]:
+        raise AssertionError(
+            f"validated condition selector was rejected: zero={zero_match}, "
+            f"five={five_match}"
+        )
+    if not math.isclose(
+        five_params.total_inhibition_mj_cm2, 119.7295, rel_tol=0.0, abs_tol=1e-12
+    ):
+        raise AssertionError("5 mM total inhibition was not resolved from source")
+    if not math.isclose(five_params.b_slope, 0.0069, abs_tol=1e-12) or not math.isclose(
+        five_params.b_intercept, 0.3815, abs_tol=1e-12
+    ):
+        raise AssertionError("5 mM B/intensity relation was not resolved from source")
+    unsafe_mix = assess_reference_physics_match(
+        five_reference, AIEParameters.from_reference()
+    )
+    if unsafe_mix["matched"]:
+        raise AssertionError("unselected 0 mM physics was accepted for the 5 mM reference")
+    return {
+        "five_total_inhibition": five_params.total_inhibition_mj_cm2,
+        "five_tempo_inhibition": five_params.tempo_inhibition_mj_cm2,
+        "five_b_slope": five_params.b_slope,
+        "five_b_intercept": five_params.b_intercept,
+        "unsafe_mix_missing": unsafe_mix["missing_for_physical_match"],
     }
 
 
@@ -2176,9 +2398,20 @@ def run_smoke_tests() -> None:
     )
     doc_reference_results = _doc_reference_curve_test()
     print(
-        "[pass] DoC reference loader/schema/condition/monotonic/interpolation; "
+        "[pass] DoC references loader/schema/conditions/monotonic/saturation/"
+        "interpolation/raw-tail exclusion/equal-replicate isotonic production; "
+        f"ids={doc_reference_results['ids']} "
         f"samples={doc_reference_results['samples']} "
-        f"final={doc_reference_results['final_doc']:.6f}"
+        f"final={doc_reference_results['final_doc']:.6f} "
+        f"delta_at_5s={doc_reference_results['condition_delta_at_5s']:.6f} "
+        f"blocks={doc_reference_results['block_counts']}"
+    )
+    condition_physics = _reference_physics_condition_test()
+    print(
+        "[pass] 30mW_0mM and 30mW_5mM forward-physics selectors; "
+        f"5mM total_inhibition={condition_physics['five_total_inhibition']:.6g}, "
+        f"B={condition_physics['five_b_slope']:.6g}*I+"
+        f"{condition_physics['five_b_intercept']:.6g}; unsafe mix guarded"
     )
     timing_steps, timing_total = _control_timing_test()
     print(
@@ -2273,7 +2506,7 @@ def parse_args() -> argparse.Namespace:
         "--resolution-mode", choices=("native", "coarse"), default="native"
     )
     parser.add_argument("--coarsen-factor", type=int, default=2)
-    parser.add_argument("--horizon", type=int, default=4)
+    parser.add_argument("--horizon", type=int, default=8)
     parser.add_argument("--physics-steps-per-control", type=int, default=10)
     timing = parser.add_mutually_exclusive_group()
     timing.add_argument(
@@ -2305,9 +2538,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--doc-reference",
-        type=Path,
-        default=REPOSITORY_DIR / "doc_reference_curve.json",
-        help="validated experimental time-domain DoC reference JSON",
+        choices=tuple(EXPECTED_CONDITIONS),
+        default="30mW_0mM",
+        help="experimental time-domain DoC tracking reference ID",
+    )
+    parser.add_argument(
+        "--allow-reference-physics-mismatch",
+        action="store_true",
+        help=(
+            "research/debug override allowing a tracking reference without a "
+            "validated matching authoritative forward-physics condition"
+        ),
     )
     parser.add_argument("--target-weight", type=float, default=1.0)
     parser.add_argument("--outside-weight", type=float, default=0.5)

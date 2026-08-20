@@ -13,7 +13,8 @@ import ast
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+import re
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ DOC_FIT_PATH = REPOSITORY_DIR / "doc_fit_parameters.json"
 DOC_FIT_SCHEMA_VERSION = 1
 CONTROLLER_NATIVE_SHAPE = (300, 300)
 SUPPORTED_MODEL_STRUCTURE_VERSION = 2
+SUPPORTED_FORWARD_CONDITIONS = ("30mW_0mM", "30mW_5mM")
 
 
 class ReferenceResolutionError(ValueError):
@@ -878,6 +880,95 @@ def load_reference_config() -> ReferenceConfig:
             condition.condition_id for condition in calibration_catalog
         ),
         doc_fit=doc_fit,
+    )
+
+
+def _unique_commented_condition_value(
+    source: str, pattern: str, label: str
+) -> tuple[float, ...]:
+    """Extract one explicitly labelled alternative without executing source."""
+
+    matches = re.findall(pattern, source, flags=re.MULTILINE | re.IGNORECASE)
+    if len(matches) != 1:
+        raise ReferenceResolutionError(
+            f"expected one authoritative {label} comment, found {len(matches)}"
+        )
+    values = matches[0]
+    if isinstance(values, str):
+        values = (values,)
+    return tuple(_finite_float(value, label) for value in values)
+
+
+def load_reference_config_for_condition(reference_id: str) -> ReferenceConfig:
+    """Resolve a validated condition configuration through the read-only adapter.
+
+    The active collaborator script is the 30 mW / 0 mM configuration.  Its source
+    also explicitly labels a 5 mM total-inhibition value and a 5 mM alternative
+    B/intensity relation.  This selector validates those comments on every load,
+    reuses the script's active generic TEMPO diffusivity, and never edits or
+    executes ``AIE_TEMPOv1.1.py``.
+    """
+
+    if reference_id not in SUPPORTED_FORWARD_CONDITIONS:
+        raise ReferenceResolutionError(
+            f"unsupported forward-physics condition {reference_id!r}; supported: "
+            f"{list(SUPPORTED_FORWARD_CONDITIONS)}"
+        )
+    base = load_reference_config()
+    if not math.isclose(
+        base.intensity_mw_cm2, 30.0, rel_tol=0.0, abs_tol=1e-12
+    ):
+        raise ReferenceResolutionError(
+            "condition selector requires authoritative intensity=30 mW/cm^2"
+        )
+
+    normalized_label = base.b_condition_label.lower().replace(" ", "")
+    if reference_id == "30mW_0mM":
+        if base.tempo_inhibition_mj_cm2 != 0.0 or "0mmtempo" not in normalized_label:
+            raise ReferenceResolutionError(
+                "active authoritative source is no longer the validated 0 mM "
+                "TEMPO configuration"
+            )
+        return replace(
+            base,
+            tempo_concentration_mM=0.0,
+            doc_fit_selection_status=(
+                "not_selected:legacy_doc_fit_parameters_not_used_for_runtime_tracking"
+            ),
+        )
+
+    source = REFERENCE_MODEL_PATH.read_text(encoding="utf-8")
+    (total_inhibition,) = _unique_commented_condition_value(
+        source,
+        r"^\s*#\s*([-+0-9.eE]+)\s+for\s+5\s*mmol\s+TEMPO\s+concentration\s*$",
+        "5 mM total inhibition",
+    )
+    b_slope, b_intercept = _unique_commented_condition_value(
+        source,
+        r"^\s*#\s*B\s*=\s*([-+0-9.eE]+)\s*\*\s*\([^\r\n]+\)\s*"
+        r"\+\s*([-+0-9.eE]+)\s*#\s*5\s*mM\s*TEMPO\s*$",
+        "5 mM B/intensity relation",
+    )
+    if total_inhibition <= base.o2_inhibition_mj_cm2:
+        raise ReferenceResolutionError(
+            "5 mM total inhibition must exceed the active O2 inhibition"
+        )
+    if b_slope <= 0.0 or b_intercept < 0.0:
+        raise ReferenceResolutionError(
+            "5 mM B/intensity coefficients must be physically nonnegative"
+        )
+    return replace(
+        base,
+        tempo_concentration_mM=5.0,
+        total_inhibition_mj_cm2=total_inhibition,
+        b_slope=b_slope,
+        b_intercept=b_intercept,
+        b_condition_label=(
+            "5mMTEMPO (validated commented alternative in AIE_TEMPOv1.1.py)"
+        ),
+        doc_fit_selection_status=(
+            "not_selected:legacy_doc_fit_parameters_not_used_for_runtime_tracking"
+        ),
     )
 
 

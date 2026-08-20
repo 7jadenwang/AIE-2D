@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "primary_result_grid": "native",
+  "reference_provenance": {
+    "artifact_path": "C:\\uSLS\\AIE-2D-David\\doc_reference_curves.json",
+    "artifact_sha256": "728424095f6d3fa07ca28f02fdcbc18bb6c92d49e0bf57d027cb88f4108db3d0",
+    "artifact_schema_version": 2,
+    "artifact_id": "doc_reference_curves_30mW_v2",
+    "artifact_exported_at_utc": "2026-08-20T22:45:20.002827Z",
+    "source_data_sha256": "1a49c5f9d85fce79f1131bda4c11fb85a4f1602ba439e1b9eb550d9f484c67c3",
+    "reference_id": "30mW_5mM",
+    "condition": {
+      "intensity_mw_cm2": 30.0,
+      "tempo_concentration_mM": 5.0
+    },
+    "condition_label": "30 mW/cm^2, 5 mM TEMPO",
+    "selected_fit_model": "isotonic_monotonic_benchmark",
+    "selected_fit_parameters": {
+      "increasing": true,
+      "lower_bound": 0.0,
+      "upper_bound": 1.0,
+      "isotonic_block_count": 661,
+      "common_grid_dt_s": 0.01
+    },
+    "fit_metrics": {
+      "sample_count": 971,
+      "parameter_count": 661,
+      "rmse": 0.0002971401998676408,
+      "mae": 7.101741251831823e-05,
+      "r_squared": 0.9999994302736761,
+      "aic": -14449.577178561878,
+      "bic": -11225.003383021312,
+      "central_threshold_time_mae_s": 0.01728444172753445
+    },
+    "production_reference_method": "equal_replicate_isotonic_linear_interp_v1",
+    "equal_replicate_construction": {
+      "common_absolute_time_grid_start_s": 0.0,
+      "common_absolute_time_grid_end_s": 9.700000000000001,
+      "common_absolute_time_grid_dt_s": 0.01,
+      "common_absolute_time_grid_point_count": 971,
+      "replicate_weights": {
+        "T1": 0.5,
+        "T2": 0.5
+      },
+      "replicate_interpolation": "piecewise_linear_absolute_time",
+      "post_replicate_saturation_behavior": "replicate DoC held exactly at 1 after its own sustained saturation confirmation",
+      "pointwise_combination": "0.5*T1 + 0.5*T2"
+    },
+    "isotonic_regression": {
+      "increasing": true,
+      "lower_bound": 0.0,
+      "upper_bound": 1.0,
+      "block_count": 661
+    },
+    "runtime_grid_interpolation_method": "piecewise_linear",
+    "compact_diagnostic_fit": {
+      "model_id": "delayed_avrami_fixed_plateau",
+      "role": "diagnostic_only_not_MPC_reference",
+      "parameters": {
+        "y0": 0.016591826338471848,
+        "t0_s": 2.6936081431825443,
+        "tau_s": 3.502516432057981,
+        "shape_n": 2.4071651483605385
+      },
+      "parameter_std_error": {
+        "y0": 0.0008301540568326446,
+        "t0_s": 0.049527641111182394,
+        "tau_s": 0.051039727992638444,
+        "shape_n": 0.040801772561038084
+      },
+      "metrics": {
+        "sample_count": 222,
+        "parameter_count": 4,
+        "rmse": 0.007719947227216984,
+        "mae": 0.005134045918706317,
+        "r_squared": 0.9995906662254607,
+        "aic": -2151.592801364763,
+        "bic": -2137.982091837274,
+        "equal_replicate_rmse": 0.0077586305669931285,
+        "equal_replicate_mae": 0.005175420801467667,
+        "central_threshold_time_mae_s": 0.03107501692607668,
+        "replicate_threshold_time_mae_s": 0.03378456300077137
+      },
+      "fitted_threshold_times_s": {
+        "t10_s": 3.9735091156103857,
+        "t30_s": 4.9308574775430225,
+        "t50_s": 5.671072582582962,
+        "t90_s": 7.631464191158629,
+        "t95_s": 8.205766391265307,
+        "t99_s": 9.28919285056932
+      }
+    },
+    "saturation_detection_rule": {
+      "rule_id": "sustained_near_unity_v1",
+      "normalized_threshold": 0.98,
+      "consecutive_samples": 4,
+      "description": "Normalize each finite CenterROI trace by its own raw maximum. Saturation is confirmed at the fourth sample in the first run of four consecutive samples with normalized signal >= 0.98. Retain data through that confirmation sample for fitting; mark every later sample excluded_from_DoC_fit with reason late_post_saturation_signal_drift. The falling tail is preserved in the raw workbook and plots but is not interpreted as decreasing conversion."
+    },
+    "saturation_times_s": {
+      "T1": 9.45000000000436,
+      "T2": 9.89899999999761,
+      "production": 9.700000000000001
+    },
+    "threshold_times_s": {
+      "t10_s": 3.9731909652394335,
+      "t30_s": 4.913227345547678,
+      "t50_s": 5.697393957238907,
+      "t90_s": 7.600494035372014,
+      "t95_s": 8.353892451071326,
+      "t99_s": 9.482347348242731
+    },
+    "reference_time_range_s": [
+      0.0,
+      20.0
+    ],
+    "final_doc": 1.0,
+    "raw_source_columns": {
+      "T1": {
+        "raw_replicate_label": "T2",
+        "time": "30mW_5mM_TEMPO_T2_Time_s",
+        "signal": "30mW_5mM_TEMPO_T2_CenterROI_Intensity"
+      },
+      "T2": {
+        "raw_replicate_label": "T3",
+        "time": "30mW_5mM_TEMPO_T3_Time_s",
+        "signal": "30mW_5mM_TEMPO_T3_CenterROI_Intensity"
+      }
+    },
+    "legacy_label_notes": [
+      "The raw workbook sheet/columns and collaborator-confirmed scientific metadata agree: this is 30 mW/cm^2 and 5 mM TEMPO. Raw T2/T3 replicate names are retained verbatim."
+    ]
+  },
+  "forward_model_provenance": {
+    "source": "AIE_TEMPOv1.1.py",
+    "sha256": "ccb4c9c31365ea9f27b53ef5ae6d3695bc27abd85a84cdaaa5f5557500554183",
+    "history_mode": "incremental_reaction_progress_v1",
+    "history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+    "tracking_reference_physics_match": {
+      "matched": true,
+      "tracking_reference_id": "30mW_5mM",
+      "tracking_condition": {
+        "intensity_mw_cm2": 30.0,
+        "tempo_concentration_mM": 5.0
+      },
+      "forward_intensity_mw_cm2": 30.0,
+      "forward_tempo_concentration_mM": 5.0,
+      "forward_o2_inhibition_mj_cm2": 27.7117,
+      "forward_total_inhibition_mj_cm2": 119.7295,
+      "forward_tempo_inhibition_mj_cm2": 92.0178,
+      "forward_tempo_diffusivity_m2_s": 4e-10,
+      "forward_b_condition_label": "5mMTEMPO (validated commented alternative in AIE_TEMPOv1.1.py)",
+      "missing_for_physical_match": [],
+      "override_used": false
+    }
+  },
+  "target": {
+    "name": "Lshape.png",
+    "path": "C:\\uSLS\\AIE-2D-David\\GEO\\Lshape.png",
+    "shape": [
+      300,
+      300
+    ],
+    "target_threshold": 0.5
+  },
+  "total_process_time_s": 20.0,
+  "control_settings": {
+    "dt_s": 0.05,
+    "physics_steps_per_control": 10,
+    "control_dt_s": 0.5,
+    "control_steps": 40,
+    "horizon": 8,
+    "prediction_horizon_seconds": 4.0,
+    "target_weight": 1.0,
+    "outside_weight": 0.5,
+    "energy_weight": 0.0001,
+    "smoothness_weight": 0.01
+  },
+  "temporal_tracking": {
+    "rmse": 0.04198972510453518,
+    "mae": 0.028595577118769942,
+    "max_absolute_error": 0.10401210960158877
+  },
+  "soft_doc": {
+    "full_image_rmse": 0.011426879786915893,
+    "target_region_rmse": 0.017118055717755605,
+    "outside_region_rmse": 0.008671367032168495,
+    "full_image_mae": 0.0004229807774225871
+  },
+  "geometry": {
+    "threshold": 0.5,
+    "threshold_interpretation": "Computational segmentation threshold only; not claimed as an experimentally calibrated gel-point threshold.",
+    "target_threshold": 0.5,
+    "iou": 0.9995630516472953,
+    "dice": 0.9997814780822516,
+    "precision": 0.9997814780822516,
+    "recall": 0.9997814780822516,
+    "undercure_fraction": 0.00021852191774835017,
+    "overcure_fraction_target_normalized": 0.00021852191774835017,
+    "overcure_fraction_image": 5.555555555555556e-05,
+    "area_error_fraction": 0.0,
+    "pixel_counts": {
+      "image_area": 90000,
+      "target_area": 22881,
+      "cured_area": 22881,
+      "true_positive": 22876,
+      "false_positive": 5,
+      "false_negative": 5
+    }
+  },
+  "boundary": {
+    "status": "ok",
+    "mean_symmetric_distance_px": 0.014665383306302512,
+    "mean_symmetric_distance_um": 0.11145691312789908,
+    "p95_symmetric_distance_px": 0.0,
+    "p95_symmetric_distance_um": 0.0
+  },
+  "components": {
+    "count": 1,
+    "worst_mean_doc": 0.9994270841582797,
+    "worst_mean_doc_component_id": 1,
+    "worst_cured_fraction": 0.9997814780822516,
+    "worst_cured_fraction_component_id": 1,
+    "worst_undercure_fraction": 0.00021852191774840435,
+    "worst_undercure_component_id": 1,
+    "table_path": "component_metrics.csv"
+  },
+  "holes": {
+    "count": 0,
+    "total_hole_pixels": 0,
+    "cured_fraction": 0.0,
+    "mean_doc": 0.0,
+    "p95_doc": 0.0,
+    "max_doc": 0.0,
+    "details": []
+  }
+}
