@@ -16,7 +16,7 @@ imagesO=[]
 imagesT=[]
 
 #folder_name = 'test_repro'
-folder_name ='260818\\260818_30mW_0mMol_Sync_line_Test'
+folder_name ='260819\\30mW_0mMol\\260819_30mW_0mMol_Sync_line_1.5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
 os.makedirs(save_path, exist_ok=True)
@@ -28,7 +28,7 @@ print('Working Device:',device)
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
     firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
     intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
-    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.30 * target),'fro')
+    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.40 * target),'fro')
     #FinalLoss=F.mse_loss(finalDoC, target)
     return finalLoss#+intermediateLoss
     #return firstLoss + intermediateLoss + finalLoss
@@ -148,10 +148,10 @@ chainGrowth_noise_std=0.0 #relative std of quenched per-pixel randomness in loca
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(10/dt)
+total_steps=int(3/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(3.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(5 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(1.5 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=27.7117
@@ -169,7 +169,7 @@ Totalinhibtion=0
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/Sync_line.png')
+img=Image.open('./GEO/sync_line.png')
 img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
@@ -243,7 +243,7 @@ grad_smooth_kernel_np=cv2.getGaussianKernel(grad_smooth_kernel_size,grad_smooth_
 grad_smooth_kernel=torch.from_numpy(np.outer(grad_smooth_kernel_np,grad_smooth_kernel_np)).view(1,1,grad_smooth_kernel_size,grad_smooth_kernel_size).to(torch.float32).to(device)
 grad_smooth_pad=grad_smooth_kernel_size//2
 
-numEpochs=1
+numEpochs=1000
 #if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]
@@ -271,9 +271,9 @@ for epoch in range(numEpochs):
     DoC=[torch.zeros((H,W)).to(torch.float32).to(device)]
 
     #A = -0.0231*(blur_mask.clamp(min=1e-12)/255 * intensity) + 2.044
-    #B = 0.0133*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4638 #0mMTEMPO
+    B = 0.0133*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4638 #0mMTEMPO
     #B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO
-    B =0.0049*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3815 #5mMTEMPO
+    #B =0.0069*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3815 #5mMTEMPO
     if chainGrowth_noise_std > 0:
         B_noise=(1 + chainGrowth_noise_std * torch.randn(H, W, device=device)).clamp(min=1e-3)
         B = B * B_noise
