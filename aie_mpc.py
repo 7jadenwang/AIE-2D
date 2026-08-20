@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import torch
 
 from aie_fine_grid import initialize_projector_mask
 from aie_model import AIEModel, AIEState
+from doc_reference import DoCReferenceCurve
 
 
 class DifferentiableMPC:
@@ -24,9 +26,9 @@ class DifferentiableMPC:
         *,
         model: AIEModel,
         target: torch.Tensor,
+        reference_curve: DoCReferenceCurve,
         horizon: int = 4,
         physics_steps_per_control: int = 10,
-        target_doc: float = 0.9,
         target_threshold: float = 0.5,
         target_weight: float = 1.0,
         outside_weight: float = 0.5,
@@ -48,8 +50,6 @@ class DifferentiableMPC:
             )
         if learning_rate <= 0:
             raise ValueError(f"learning_rate must be positive, got {learning_rate}")
-        if not 0 <= target_doc <= 1:
-            raise ValueError(f"target_doc must be in [0, 1], got {target_doc}")
         if not 0 <= target_threshold <= 1:
             raise ValueError(
                 f"target_threshold must be in [0, 1], got {target_threshold}"
@@ -81,11 +81,11 @@ class DifferentiableMPC:
 
         self.model = model
         self.target = target
+        self.reference_curve = reference_curve
         self.target_region = target_region
         self.outside_region = 1.0 - target_region
         self.horizon = horizon
         self.physics_steps_per_control = physics_steps_per_control
-        self.target_doc = target_doc
         self.target_weight = target_weight
         self.outside_weight = outside_weight
         self.energy_weight = energy_weight
@@ -124,6 +124,8 @@ class DifferentiableMPC:
         self,
         current_state: AIEState,
         initial_guess: torch.Tensor | None = None,
+        *,
+        current_process_time_s: float,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         """Optimize the nonlinear prediction horizon with PyTorch Adam.
 
@@ -150,12 +152,15 @@ class DifferentiableMPC:
         for _ in range(self.num_iterations):
             optimizer.zero_grad()
             controls = torch.sigmoid(logits)
-            predicted_state = self.model.rollout(
+            predicted_states = self.predict_stages(
                 fixed_state,
                 controls,
-                physics_steps_per_control=self.physics_steps_per_control,
             )
-            loss, _ = self.cost(predicted_state, controls)
+            loss, _ = self.cost(
+                predicted_states,
+                controls,
+                current_process_time_s=current_process_time_s,
+            )
             if not bool(torch.isfinite(loss)):
                 raise FloatingPointError("MPC loss became NaN or Inf")
             loss_history.append(float(loss.detach()))
@@ -169,12 +174,15 @@ class DifferentiableMPC:
 
         with torch.no_grad():
             optimized_controls = torch.sigmoid(logits)
-            final_state = self.model.rollout(
+            final_states = self.predict_stages(
                 fixed_state,
                 optimized_controls,
-                physics_steps_per_control=self.physics_steps_per_control,
             )
-            final_loss, final_components = self.cost(final_state, optimized_controls)
+            final_loss, final_components = self.cost(
+                final_states,
+                optimized_controls,
+                current_process_time_s=current_process_time_s,
+            )
             final_loss_value = float(final_loss)
             loss_history.append(final_loss_value)
             result = optimized_controls.detach().clone()
@@ -188,19 +196,79 @@ class DifferentiableMPC:
                 name: float(value) for name, value in final_components.items()
             },
             "optimized_control_sequence": result,
+            "stage_times_s": self.reference_curve.stage_times(
+                current_process_time_s, self.control_dt_s, self.horizon
+            ).tolist(),
+            "stage_reference_doc": self.reference_curve.stage_values(
+                current_process_time_s, self.control_dt_s, self.horizon
+            ).tolist(),
         }
         return result, info
 
-    def cost(
-        self, predicted_state: AIEState, controls: torch.Tensor
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Evaluate target, outside-cure, exposure, and smoothness costs."""
+    @property
+    def control_dt_s(self) -> float:
+        """Physical duration of one held MPC control."""
 
-        if tuple(predicted_state.doc.shape) != tuple(self.target.shape):
+        return self.physics_steps_per_control * self.model.params.dt
+
+    def predict_stages(
+        self, current_state: AIEState, controls: torch.Tensor
+    ) -> tuple[AIEState, ...]:
+        """Return the physical state at every future control boundary."""
+
+        expected_control_shape = (self.horizon, *self.control_shape)
+        if tuple(controls.shape) != expected_control_shape:
             raise ValueError(
-                f"predicted DoC shape {tuple(predicted_state.doc.shape)} does not "
-                f"match target shape {tuple(self.target.shape)}"
+                f"controls must have shape {expected_control_shape}, got "
+                f"{tuple(controls.shape)}"
             )
+        stages: list[AIEState] = []
+        state = current_state
+        for control in controls:
+            state = self.model.advance(
+                state, control, physics_steps=self.physics_steps_per_control
+            )
+            stages.append(state)
+        return tuple(stages)
+
+    def stage_reference_values(self, current_process_time_s: float) -> torch.Tensor:
+        """Return scalar DoC references at absolute future stage times."""
+
+        return torch.as_tensor(
+            self.reference_curve.stage_values(
+                current_process_time_s, self.control_dt_s, self.horizon
+            ),
+            device=self.model.device,
+            dtype=self.model.dtype,
+        )
+
+    def desired_doc_stages(self, current_process_time_s: float) -> torch.Tensor:
+        """Construct ``M(x,y) * r(t_absolute)`` for every prediction stage."""
+
+        reference = self.stage_reference_values(current_process_time_s)
+        return reference[:, None, None] * self.target[None, :, :]
+
+    def cost(
+        self,
+        predicted_states: Sequence[AIEState],
+        controls: torch.Tensor,
+        *,
+        current_process_time_s: float,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Evaluate equal-weight absolute-time tracking and existing penalties."""
+
+        if len(predicted_states) != self.horizon:
+            raise ValueError(
+                f"predicted_states must contain {self.horizon} stages, got "
+                f"{len(predicted_states)}"
+            )
+        for index, predicted_state in enumerate(predicted_states):
+            if tuple(predicted_state.doc.shape) != tuple(self.target.shape):
+                raise ValueError(
+                    f"predicted stage {index} DoC shape "
+                    f"{tuple(predicted_state.doc.shape)} does not match target "
+                    f"shape {tuple(self.target.shape)}"
+                )
         expected_control_shape = (self.horizon, *self.control_shape)
         if tuple(controls.shape) != expected_control_shape:
             raise ValueError(
@@ -208,11 +276,22 @@ class DifferentiableMPC:
                 f"{tuple(controls.shape)}"
             )
 
-        target_error = (predicted_state.doc - self.target_doc).square()
-        target_cost = self._masked_mean(target_error, self.target_region)
-        outside_cost = self._masked_mean(
-            predicted_state.doc.square(), self.outside_region
-        )
+        desired_doc_stages = self.desired_doc_stages(current_process_time_s)
+        target_stage_costs: list[torch.Tensor] = []
+        outside_stage_costs: list[torch.Tensor] = []
+        for predicted_state, desired_doc in zip(predicted_states, desired_doc_stages):
+            target_stage_costs.append(
+                self._masked_mean(
+                    (predicted_state.doc - desired_doc).square(), self.target_region
+                )
+            )
+            outside_stage_costs.append(
+                self._masked_mean(
+                    predicted_state.doc.square(), self.outside_region
+                )
+            )
+        target_cost = torch.stack(target_stage_costs).mean()
+        outside_cost = torch.stack(outside_stage_costs).mean()
         energy_cost = controls.square().mean()
         if self.horizon > 1:
             smoothness_cost = (controls[1:] - controls[:-1]).square().mean()

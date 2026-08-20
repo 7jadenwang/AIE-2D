@@ -6,9 +6,9 @@
   "averaging_method": "componentwise_arithmetic_mean_of_replicate_coefficients",
   "conditions": [
     {
-      "condition_id": "20mW_0mM_TEMPO",
-      "condition_label": "20 mW/cm^2, 0 mM TEMPO, new DLP",
-      "intensity_mw_cm2": 20.0,
+      "condition_id": "30mW_0mM_TEMPO",
+      "condition_label": "30 mW/cm^2, 0 mM TEMPO, new DLP",
+      "intensity_mw_cm2": 30.0,
       "tempo_concentration_mM": 0.0,
       "formula_id": "doc_minimum_exponent_v1",
       "formula": "1 - a * exp(minimum(b * (c - t), 0))",
@@ -38,7 +38,8 @@
         "c": 1.2933263108527293
       },
       "notes": [
-        "Condition mapping follows loaded sheet/column names; the plot title incorrectly says 30 mW."
+        "The source sheet and columns retain '20mW', a confirmed legacy naming typo; this condition is 30 mW/cm^2 and 0 mM TEMPO.",
+        "This legacy delayed-exponential record is retained for provenance/comparison only; doc_reference_curve.json contains the selected runtime trajectory reference."
       ]
     },
     {

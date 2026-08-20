@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import csv
 import hashlib
 import json
 import math
@@ -41,6 +42,12 @@ from aie_model import (
 from aie_mpc import DifferentiableMPC
 import aie_reference
 from aie_reference import load_reference_config, reference_step_torch
+from doc_reference import DoCReferenceCurve, load_doc_reference
+from mpc_metrics import (
+    GEOMETRY_THRESHOLD_NOTE,
+    calculate_final_metrics,
+    temporal_tracking_metrics,
+)
 
 
 REPOSITORY_DIR = Path(__file__).resolve().parent
@@ -430,6 +437,177 @@ def doc_region_metrics(
     return target_mean, outside_mean
 
 
+def resolve_control_timing(
+    *, total_time_s: float | None, control_steps: int | None, control_dt_s: float
+) -> tuple[int, float]:
+    """Resolve a physical duration without independently hard-coding step count."""
+
+    if not math.isfinite(control_dt_s) or control_dt_s <= 0:
+        raise ValueError("control_dt_s must be finite and positive")
+    if total_time_s is not None and control_steps is not None:
+        raise ValueError("provide either total_time_s or control_steps, not both")
+    if total_time_s is None and control_steps is None:
+        total_time_s = 20.0
+    if total_time_s is not None:
+        if not math.isfinite(total_time_s) or total_time_s <= 0:
+            raise ValueError("total_time_s must be finite and positive")
+        raw_steps = total_time_s / control_dt_s
+        derived_steps = int(round(raw_steps))
+        if derived_steps < 1 or not math.isclose(
+            derived_steps * control_dt_s,
+            total_time_s,
+            rel_tol=0.0,
+            abs_tol=max(1e-10, 1e-9 * total_time_s),
+        ):
+            raise ValueError(
+                f"total time {total_time_s:g} s is not compatible with control "
+                f"interval {control_dt_s:g} s"
+            )
+        return derived_steps, float(total_time_s)
+    if not isinstance(control_steps, int) or control_steps < 1:
+        raise ValueError(f"control_steps must be at least 1, got {control_steps}")
+    return control_steps, control_steps * control_dt_s
+
+
+def save_component_metrics_csv(rows: list[dict[str, object]], path: Path) -> None:
+    """Save the complete component table without flooding terminal output."""
+
+    columns = (
+        "component_id",
+        "area_pixels",
+        "area_um2",
+        "mean_final_doc",
+        "p05_final_doc",
+        "cured_fraction",
+        "undercure_fraction",
+    )
+    with path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def save_tracking_plot(
+    reference_curve: DoCReferenceCurve,
+    total_time_s: float,
+    control_times_s: np.ndarray,
+    actual_target_doc: np.ndarray,
+    path: Path,
+) -> None:
+    """Save experimental-reference versus closed-loop mean target DoC."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    reference_time = np.linspace(0.0, total_time_s, max(401, int(total_time_s / 0.01) + 1))
+    reference_doc = np.asarray(reference_curve.at(reference_time))
+    figure, axis = plt.subplots(figsize=(8, 5))
+    axis.plot(reference_time, reference_doc, label="experimental reference", linewidth=2)
+    axis.plot(
+        np.r_[0.0, control_times_s],
+        np.r_[0.0, actual_target_doc],
+        "o-",
+        markersize=3,
+        label="closed-loop mean target DoC",
+    )
+    axis.set_xlim(0.0, total_time_s)
+    axis.set_ylim(0.0, 1.02)
+    axis.set_xlabel("Absolute process time (s)")
+    axis.set_ylabel("Degree of conversion")
+    axis.set_title("DoC trajectory tracking: 0 mM TEMPO, 30 mW/cm²")
+    axis.grid(alpha=0.25)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
+def _format_optional(value: float | None, suffix: str = "") -> str:
+    return "undefined" if value is None else f"{value:.6f}{suffix}"
+
+
+def print_metrics_summary(
+    *,
+    total_time_s: float,
+    tracking: dict[str, float],
+    reference_final_doc: float,
+    target_mean_doc: float,
+    outside_mean_doc: float,
+    final_metrics: dict[str, object],
+) -> None:
+    """Print the compact terminal summary for the primary native result."""
+
+    soft = final_metrics["soft_doc"]
+    geometry = final_metrics["geometry"]
+    boundary = final_metrics["boundary"]
+    components = final_metrics["components"]
+    holes = final_metrics["holes"]
+    print("\n=== Closed-loop tracking ===")
+    print(f"total time:                {total_time_s:.2f} s")
+    print(f"tracking RMSE:             {tracking['rmse']:.6f}")
+    print(f"tracking MAE:              {tracking['mae']:.6f}")
+    print(f"maximum absolute error:    {tracking['max_absolute_error']:.6f}")
+    print("\n=== Final DoC ===")
+    print(f"reference final DoC:       {reference_final_doc:.6f}")
+    print(f"mean target DoC:           {target_mean_doc:.6f}")
+    print(f"mean outside DoC:          {outside_mean_doc:.6f}")
+    print(f"full-image DoC RMSE:       {soft['full_image_rmse']:.6f}")
+    print(f"target DoC RMSE:           {soft['target_region_rmse']:.6f}")
+    print(f"outside DoC RMSE:          {soft['outside_region_rmse']:.6f}")
+    print(f"full-image DoC MAE:        {soft['full_image_mae']:.6f}")
+    print(f"\n=== Geometry @ threshold {geometry['threshold']:.2f} ===")
+    print(f"IoU:                       {geometry['iou']:.6f}")
+    print(f"Dice:                      {geometry['dice']:.6f}")
+    print(f"precision:                 {geometry['precision']:.6f}")
+    print(f"recall:                    {geometry['recall']:.6f}")
+    print(f"undercure fraction:        {geometry['undercure_fraction']:.6f}")
+    print(
+        "overcure / target area:    "
+        f"{geometry['overcure_fraction_target_normalized']:.6f}"
+    )
+    print(f"overcure / image area:     {geometry['overcure_fraction_image']:.6f}")
+    print(f"area error:                {geometry['area_error_fraction']:.6f}")
+    counts = geometry["pixel_counts"]
+    print(
+        "pixels target/cured/TP/FP/FN: "
+        f"{counts['target_area']}/{counts['cured_area']}/{counts['true_positive']}/"
+        f"{counts['false_positive']}/{counts['false_negative']}"
+    )
+    print(f"threshold note:            {GEOMETRY_THRESHOLD_NOTE}")
+    print("\n=== Boundary ===")
+    print(
+        "mean symmetric error:      "
+        f"{_format_optional(boundary['mean_symmetric_distance_um'], ' um')}"
+    )
+    print(
+        "mean symmetric error:      "
+        f"{_format_optional(boundary['mean_symmetric_distance_px'], ' px')}"
+    )
+    print(
+        "p95 symmetric error:       "
+        f"{_format_optional(boundary['p95_symmetric_distance_um'], ' um')}"
+    )
+    print("\n=== Features ===")
+    print(f"target components:         {components['count']}")
+    print(
+        "worst component mean DoC:  "
+        f"{_format_optional(components['worst_mean_doc'])}"
+    )
+    print(
+        "worst component cured:     "
+        f"{_format_optional(components['worst_cured_fraction'])}"
+    )
+    print(
+        "worst component undercure: "
+        f"{_format_optional(components['worst_undercure_fraction'])}"
+    )
+    print(f"holes:                     {holes['count']}")
+    print(f"hole overcure fraction:    {holes['cured_fraction']:.6f}")
+    print(f"hole mean/p95/max DoC:     {holes['mean_doc']:.6f}/{holes['p95_doc']:.6f}/{holes['max_doc']:.6f}")
+
+
 def _print_resolution_header(
     config: ResolutionConfig,
     device: torch.device,
@@ -468,6 +646,8 @@ def _print_resolution_header(
         f"{args.horizon * args.physics_steps_per_control * params.dt:.3f}s "
         f"iterations={args.iterations}"
     )
+    print(f"total_process_time={args.total_time:.3f}s")
+    print(f"derived_control_steps={args.control_steps}")
 
 
 def _print_parameter_provenance(params: AIEParameters) -> None:
@@ -523,9 +703,17 @@ def _print_parameter_provenance(params: AIEParameters) -> None:
 def run_demo(args: argparse.Namespace) -> None:
     """Run native MPC or coarse MPC followed by required native replay."""
 
-    if args.control_steps < 1:
-        raise ValueError(f"control_steps must be at least 1, got {args.control_steps}")
     reference = load_reference_config()
+    native_params = native_aie_parameters(reference)
+    control_dt_s = native_params.dt * args.physics_steps_per_control
+    control_steps, total_time_s = resolve_control_timing(
+        total_time_s=args.total_time,
+        control_steps=args.control_steps,
+        control_dt_s=control_dt_s,
+    )
+    args.control_steps = control_steps
+    args.total_time = total_time_s
+    doc_reference = load_doc_reference(args.doc_reference)
     target_path = resolve_target_path(args.target)
     target_native = load_normalized_target(target_path)
     require_native_target(target_native, target_path)
@@ -537,7 +725,6 @@ def run_demo(args: argparse.Namespace) -> None:
         reference=reference,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    native_params = native_aie_parameters(reference)
     optimization_params = (
         native_params
         if config.resolution_mode == "native"
@@ -548,6 +735,16 @@ def run_demo(args: argparse.Namespace) -> None:
         )
     )
     _print_parameter_provenance(native_params)
+    print(
+        "DoC trajectory reference: "
+        f"{doc_reference.metadata['reference_id']} "
+        f"({doc_reference.metadata.get('condition_label', '30 mW/cm^2, 0 mM TEMPO')})"
+    )
+    print(f"DoC reference SHA256: {doc_reference.source_sha256}")
+    print(
+        "DoC reference use: control target only; AIE/reaction_progress forward "
+        "physics unchanged"
+    )
     _print_resolution_header(config, device, args, optimization_params)
 
     target_native = target_native.to(device=device)
@@ -557,9 +754,9 @@ def run_demo(args: argparse.Namespace) -> None:
     controller = DifferentiableMPC(
         model=model,
         target=optimization_target,
+        reference_curve=doc_reference,
         horizon=args.horizon,
         physics_steps_per_control=args.physics_steps_per_control,
-        target_doc=args.target_doc,
         target_threshold=args.target_threshold,
         target_weight=args.target_weight,
         outside_weight=args.outside_weight,
@@ -581,6 +778,10 @@ def run_demo(args: argparse.Namespace) -> None:
     applied_controls_optimization: list[torch.Tensor] = []
     applied_controls_native: list[torch.Tensor] = []
     optimization_histories: list[list[float]] = []
+    optimization_control_times_s: list[float] = []
+    optimization_reference_doc: list[float] = []
+    optimization_target_doc: list[float] = []
+    optimization_outside_doc: list[float] = []
     coarse_doc_frame_paths: list[Path] = []
     native_doc_frame_paths: list[Path] = []
     if config.resolution_mode == "coarse":
@@ -606,7 +807,12 @@ def run_demo(args: argparse.Namespace) -> None:
 
     for control_step in range(args.control_steps):
         started = time.perf_counter()
-        optimized_controls, info = controller.optimize(state, initial_guess=guess)
+        current_process_time_s = control_step * control_dt_s
+        optimized_controls, info = controller.optimize(
+            state,
+            initial_guess=guess,
+            current_process_time_s=current_process_time_s,
+        )
         applied_control = optimized_controls[0].detach().clone()
         state = model.advance(
             state,
@@ -645,12 +851,24 @@ def run_demo(args: argparse.Namespace) -> None:
         target_doc_mean, outside_doc_mean = doc_region_metrics(
             state.doc, optimization_target, args.target_threshold
         )
+        applied_time_s = (control_step + 1) * control_dt_s
+        reference_doc = float(doc_reference.at(applied_time_s))
+        optimization_control_times_s.append(applied_time_s)
+        optimization_reference_doc.append(reference_doc)
+        optimization_target_doc.append(target_doc_mean)
+        optimization_outside_doc.append(outside_doc_mean)
+        running_error = np.asarray(optimization_target_doc) - np.asarray(
+            optimization_reference_doc
+        )
+        running_rmse = float(np.sqrt(np.mean(np.square(running_error))))
         elapsed = time.perf_counter() - started
         print(
             f"step {control_step + 1:02d}/{args.control_steps:02d} "
+            f"t={applied_time_s:.2f}s ref={reference_doc:.4f} "
             f"loss {info['initial_loss']:.5f}->{info['final_loss']:.5f} "
             f"DoC(target/out)={target_doc_mean:.4f}/{outside_doc_mean:.4f} "
-            f"mask_mean={float(applied_control.mean()):.3f} time={elapsed:.2f}s"
+            f"track_rmse={running_rmse:.5f} "
+            f"mask_mean={float(applied_control.mean()):.3f} solve={elapsed:.2f}s"
         )
 
     optimization_state = state
@@ -667,10 +885,19 @@ def run_demo(args: argparse.Namespace) -> None:
             raise AssertionError("coarse DoC timeline has an unexpected frame count")
         save_gif_from_frames(coarse_doc_frame_paths, coarse_gif_path)
 
+        native_replay_target_doc: list[float] = []
+        native_replay_outside_doc: list[float] = []
+
         def save_native_replay_frame(frame_index: int, doc: torch.Tensor) -> None:
             frame_path = args.output_dir / f"doc_frame_native_{frame_index:03d}.png"
             save_doc_frame(doc, frame_path, config.native_shape)
             native_doc_frame_paths.append(frame_path)
+            if frame_index > 0:
+                target_mean, outside_mean = doc_region_metrics(
+                    doc, target_native, args.target_threshold
+                )
+                native_replay_target_doc.append(target_mean)
+                native_replay_outside_doc.append(outside_mean)
 
         native_state = replay_native_controls(
             native_params,
@@ -682,6 +909,8 @@ def run_demo(args: argparse.Namespace) -> None:
         )
     else:
         native_state = optimization_state
+        native_replay_target_doc = optimization_target_doc
+        native_replay_outside_doc = optimization_outside_doc
 
     if len(native_doc_frame_paths) != args.control_steps + 1:
         raise AssertionError("native DoC timeline has an unexpected frame count")
@@ -706,6 +935,92 @@ def run_demo(args: argparse.Namespace) -> None:
     native_target_doc, native_outside_doc = doc_region_metrics(
         native_state.doc, target_native, args.target_threshold
     )
+    primary_control_times_s = np.asarray(optimization_control_times_s, dtype=float)
+    primary_reference_doc = np.asarray(
+        doc_reference.at(primary_control_times_s), dtype=float
+    )
+    primary_target_doc = np.asarray(native_replay_target_doc, dtype=float)
+    primary_outside_doc = np.asarray(native_replay_outside_doc, dtype=float)
+    if not (
+        primary_control_times_s.size
+        == primary_reference_doc.size
+        == primary_target_doc.size
+        == primary_outside_doc.size
+        == args.control_steps
+    ):
+        raise AssertionError("primary native tracking timeline has an unexpected length")
+    primary_tracking_error = primary_target_doc - primary_reference_doc
+    tracking = temporal_tracking_metrics(primary_target_doc, primary_reference_doc)
+    reference_final_doc = float(doc_reference.at(total_time_s))
+    final_metrics = calculate_final_metrics(
+        native_state.doc.detach().cpu().numpy(),
+        target_native.detach().cpu().numpy(),
+        reference_final_doc,
+        args.target_threshold,
+        args.geometry_threshold,
+        config.native_pixel_pitch_m * 1e6,
+    )
+    component_metrics_path = args.output_dir / "component_metrics.csv"
+    save_component_metrics_csv(final_metrics["component_rows"], component_metrics_path)
+    tracking_plot_path = args.output_dir / "doc_tracking_curve.png"
+    save_tracking_plot(
+        doc_reference,
+        total_time_s,
+        primary_control_times_s,
+        primary_target_doc,
+        tracking_plot_path,
+    )
+    components_summary = {
+        **final_metrics["components"],
+        "table_path": component_metrics_path.name,
+    }
+    holes_summary = {
+        **final_metrics["holes"],
+        "details": final_metrics["hole_rows"],
+    }
+    metrics_document = {
+        "schema_version": 1,
+        "primary_result_grid": (
+            "native_replay" if config.resolution_mode == "coarse" else "native"
+        ),
+        "reference_provenance": doc_reference.provenance_metadata(),
+        "forward_model_provenance": {
+            "source": native_params.reference_model_source,
+            "sha256": native_params.reference_model_sha256,
+            "history_mode": DOC_HISTORY_MODE,
+            "history_description": DOC_HISTORY_DESCRIPTION,
+        },
+        "target": {
+            "name": target_path.name,
+            "path": str(target_path),
+            "shape": list(config.native_shape),
+            "target_threshold": args.target_threshold,
+        },
+        "total_process_time_s": total_time_s,
+        "control_settings": {
+            "dt_s": native_params.dt,
+            "physics_steps_per_control": args.physics_steps_per_control,
+            "control_dt_s": control_dt_s,
+            "control_steps": args.control_steps,
+            "horizon": args.horizon,
+            "prediction_horizon_seconds": args.horizon * control_dt_s,
+            "target_weight": args.target_weight,
+            "outside_weight": args.outside_weight,
+            "energy_weight": args.energy_weight,
+            "smoothness_weight": args.smoothness_weight,
+        },
+        "temporal_tracking": tracking,
+        "soft_doc": final_metrics["soft_doc"],
+        "geometry": final_metrics["geometry"],
+        "boundary": final_metrics["boundary"],
+        "components": components_summary,
+        "holes": holes_summary,
+    }
+    metrics_path = args.output_dir / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(metrics_document, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
     common_results: dict[str, object] = {
         "resolution_mode": np.asarray(config.resolution_mode),
         "native_shape": np.asarray(config.native_shape, dtype=np.int64),
@@ -728,6 +1043,32 @@ def run_demo(args: argparse.Namespace) -> None:
         "prediction_horizon_seconds": np.float64(
             args.horizon * args.physics_steps_per_control * native_params.dt
         ),
+        "total_process_time_s": np.float64(total_time_s),
+        "control_steps": np.int64(args.control_steps),
+        "geometry_threshold": np.float64(args.geometry_threshold),
+        "geometry_threshold_note": np.asarray(GEOMETRY_THRESHOLD_NOTE),
+        "control_times_s": primary_control_times_s,
+        "reference_doc_values": primary_reference_doc,
+        "actual_mean_target_doc": primary_target_doc,
+        "actual_mean_outside_doc": primary_outside_doc,
+        "temporal_tracking_errors": primary_tracking_error,
+        "temporal_tracking_rmse": np.float64(tracking["rmse"]),
+        "temporal_tracking_mae": np.float64(tracking["mae"]),
+        "temporal_tracking_max_absolute_error": np.float64(
+            tracking["max_absolute_error"]
+        ),
+        "doc_reference_metadata_json": np.asarray(
+            json.dumps(doc_reference.provenance_metadata(), sort_keys=True)
+        ),
+        "doc_reference_source_sha256": np.asarray(doc_reference.source_sha256),
+        "metrics_json": np.asarray(json.dumps(metrics_document, sort_keys=True)),
+        "component_metrics_json": np.asarray(
+            json.dumps(final_metrics["component_rows"], sort_keys=True)
+        ),
+        "hole_metrics_json": np.asarray(
+            json.dumps(final_metrics["hole_rows"], sort_keys=True)
+        ),
+        "hole_mask_native": final_metrics["hole_mask"],
         "reference_model_source": np.asarray(native_params.reference_model_source),
         "reference_model_sha256": np.asarray(
             native_params.reference_model_sha256
@@ -797,6 +1138,15 @@ def run_demo(args: argparse.Namespace) -> None:
     results_name = f"mpc_results_{config.resolution_mode}.npz"
     np.savez_compressed(args.output_dir / results_name, **common_results)
 
+    print_metrics_summary(
+        total_time_s=total_time_s,
+        tracking=tracking,
+        reference_final_doc=reference_final_doc,
+        target_mean_doc=native_target_doc,
+        outside_mean_doc=native_outside_doc,
+        final_metrics=final_metrics,
+    )
+
     print(f"resolution_mode={config.resolution_mode}")
     print(f"native_grid={config.native_shape}")
     print(f"optimization_grid={config.optimization_shape}")
@@ -813,6 +1163,9 @@ def run_demo(args: argparse.Namespace) -> None:
         print(f"saved native replay DoC GIF: {native_gif_path.resolve()}")
     else:
         print(f"saved native DoC GIF: {native_gif_path.resolve()}")
+    print(f"saved tracking plot: {tracking_plot_path.resolve()}")
+    print(f"saved component metrics: {component_metrics_path.resolve()}")
+    print(f"saved metrics summary: {metrics_path.resolve()}")
     print(f"saved outputs to {args.output_dir.resolve()}")
 
 
@@ -1331,9 +1684,9 @@ def _mpc_optimization_test(device: torch.device) -> tuple[float, float]:
     controller = DifferentiableMPC(
         model=model,
         target=target,
+        reference_curve=load_doc_reference(),
         horizon=2,
         physics_steps_per_control=5,
-        target_doc=0.16,
         outside_weight=0.0,
         energy_weight=0.0,
         smoothness_weight=0.0,
@@ -1341,7 +1694,9 @@ def _mpc_optimization_test(device: torch.device) -> tuple[float, float]:
         learning_rate=0.3,
     )
     guess = torch.full((2, size, size), 0.2, device=device)
-    _, info = controller.optimize(state, initial_guess=guess)
+    _, info = controller.optimize(
+        state, initial_guess=guess, current_process_time_s=1.5
+    )
     initial_loss = info["initial_loss"]
     final_loss = info["final_loss"]
     if not final_loss < initial_loss:
@@ -1349,6 +1704,185 @@ def _mpc_optimization_test(device: torch.device) -> tuple[float, float]:
             f"MPC loss did not decrease: {initial_loss} -> {final_loss}"
         )
     return initial_loss, final_loss
+
+
+def _doc_reference_curve_test() -> dict[str, object]:
+    """Validate loader schema, monotonicity, interpolation, and endpoint hold."""
+
+    reference = load_doc_reference()
+    if reference.metadata["schema_version"] != 1:
+        raise AssertionError("unexpected DoC reference schema")
+    if reference.time_s[0] != 0.0 or reference.time_s[-1] != 20.0:
+        raise AssertionError("DoC reference does not span exactly 0 to 20 s")
+    if not np.isfinite(reference.doc_reference).all():
+        raise AssertionError("DoC reference contains NaN or Inf")
+    if np.any(np.diff(reference.doc_reference) < -1e-10):
+        raise AssertionError("DoC reference is not monotonic nondecreasing")
+    left_index = int(np.searchsorted(reference.time_s, 2.025) - 1)
+    expected_midpoint = 0.5 * (
+        reference.doc_reference[left_index]
+        + reference.doc_reference[left_index + 1]
+    )
+    if not math.isclose(
+        float(reference.at(2.025)),
+        float(expected_midpoint),
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise AssertionError("DoC reference linear interpolation is incorrect")
+    if reference.at(-1.0) != reference.doc_reference[0]:
+        raise AssertionError("DoC reference does not hold its first endpoint")
+    if reference.at(25.0) != reference.doc_reference[-1]:
+        raise AssertionError("DoC reference does not hold its final plateau")
+    with tempfile.TemporaryDirectory() as directory:
+        invalid_path = Path(directory) / "invalid_reference.json"
+        invalid = json.loads(json.dumps(reference.metadata))
+        invalid["condition"]["intensity_mw_cm2"] = 20.0
+        invalid_path.write_text(json.dumps(invalid), encoding="utf-8")
+        try:
+            load_doc_reference(invalid_path)
+        except ValueError as error:
+            if "30" not in str(error):
+                raise AssertionError(f"unexpected condition validation error: {error}")
+        else:
+            raise AssertionError("incorrect DoC reference condition was accepted")
+    return {
+        "samples": int(reference.time_s.size),
+        "final_doc": reference.final_doc,
+        "interpolated_2p025": float(reference.at(2.025)),
+    }
+
+
+def _trajectory_tracking_construction_test(device: torch.device) -> dict[str, object]:
+    """Validate absolute-time stage references, spatial construction, and gradients."""
+
+    reference = load_doc_reference()
+    params = replace(AIEParameters.from_reference(), o2_inhibition_mj_cm2=0.0)
+    model = AIEModel(params, device=device)
+    size = model.scattering_kernel_size // 2 + 3
+    target = torch.zeros((size, size), device=device)
+    target[1:-1, 1:-1] = 1.0
+    controller = DifferentiableMPC(
+        model=model,
+        target=target,
+        reference_curve=reference,
+        horizon=8,
+        physics_steps_per_control=10,
+        outside_weight=0.5,
+        energy_weight=1e-4,
+        smoothness_weight=1e-2,
+        num_iterations=1,
+    )
+    stage_times = reference.stage_times(6.0, controller.control_dt_s, 8)
+    expected_times = np.arange(6.5, 10.0 + 0.25, 0.5)
+    np.testing.assert_allclose(stage_times, expected_times, rtol=0.0, atol=1e-12)
+    stage_reference = reference.stage_values(6.0, controller.control_dt_s, 8)
+    restarted_reference = reference.stage_values(0.0, controller.control_dt_s, 8)
+    if np.allclose(stage_reference, restarted_reference):
+        raise AssertionError("stage reference incorrectly restarts at each MPC solve")
+    desired = controller.desired_doc_stages(6.0)
+    torch.testing.assert_close(
+        desired[:, 1, 1],
+        torch.as_tensor(stage_reference, device=device, dtype=model.dtype),
+    )
+    torch.testing.assert_close(
+        desired[:, 0, 0], torch.zeros(8, device=device, dtype=model.dtype)
+    )
+
+    controls = torch.full(
+        (controller.horizon, *controller.control_shape),
+        0.4,
+        device=device,
+        requires_grad=True,
+    )
+    states = controller.predict_stages(model.initialize_state(target.shape), controls)
+    loss, _ = controller.cost(
+        states, controls, current_process_time_s=1.0
+    )
+    loss.backward()
+    if controls.grad is None or not bool(torch.isfinite(controls.grad).all()):
+        raise AssertionError("trajectory-tracking loss gradient is missing/non-finite")
+    if int(torch.count_nonzero(controls.grad)) == 0:
+        raise AssertionError("trajectory-tracking loss gradient is identically zero")
+    return {
+        "stage_times": stage_times.tolist(),
+        "stage_reference": stage_reference.tolist(),
+        "gradient_norm": float(controls.grad.norm()),
+    }
+
+
+def _control_timing_test() -> tuple[int, float]:
+    steps, total = resolve_control_timing(
+        total_time_s=20.0, control_steps=None, control_dt_s=0.5
+    )
+    if steps != 40 or total != 20.0:
+        raise AssertionError("20 s at 0.5 s/control did not resolve to 40 controls")
+    try:
+        resolve_control_timing(
+            total_time_s=20.1, control_steps=None, control_dt_s=0.5
+        )
+    except ValueError as error:
+        if "not compatible" not in str(error):
+            raise AssertionError(f"unexpected timing validation error: {error}")
+    else:
+        raise AssertionError("incompatible total time was accepted")
+    return steps, total
+
+
+def _quantitative_metrics_test() -> dict[str, float]:
+    """Validate perfect geometry and a known one-pixel boundary shift."""
+
+    target = np.zeros((10, 12), dtype=float)
+    target[2:8, 3:9] = 1.0
+    perfect_doc = 0.9 * target
+    perfect = calculate_final_metrics(
+        perfect_doc,
+        target,
+        reference_final_doc=0.9,
+        target_threshold=0.5,
+        geometry_threshold=0.5,
+        pixel_pitch_um=2.5,
+    )
+    geometry = perfect["geometry"]
+    boundary = perfect["boundary"]
+    for name in ("iou", "dice", "precision", "recall"):
+        if geometry[name] != 1.0:
+            raise AssertionError(f"perfect {name} != 1")
+    for name in (
+        "undercure_fraction",
+        "overcure_fraction_target_normalized",
+        "overcure_fraction_image",
+        "area_error_fraction",
+    ):
+        if geometry[name] != 0.0:
+            raise AssertionError(f"perfect {name} != 0")
+    if boundary["mean_symmetric_distance_px"] != 0.0:
+        raise AssertionError("perfect boundary distance is not zero")
+
+    line_target = np.zeros((8, 8), dtype=float)
+    line_target[2:6, 2] = 1.0
+    shifted_doc = np.zeros_like(line_target)
+    shifted_doc[2:6, 3] = 0.9
+    shifted = calculate_final_metrics(
+        shifted_doc,
+        line_target,
+        reference_final_doc=0.9,
+        target_threshold=0.5,
+        geometry_threshold=0.5,
+        pixel_pitch_um=2.5,
+    )["boundary"]
+    if not math.isclose(
+        shifted["mean_symmetric_distance_px"], 1.0, abs_tol=1e-12
+    ) or not math.isclose(
+        shifted["p95_symmetric_distance_um"], 2.5, abs_tol=1e-12
+    ):
+        raise AssertionError(f"known one-pixel boundary shift is incorrect: {shifted}")
+    return {
+        "perfect_iou": geometry["iou"],
+        "perfect_boundary_px": boundary["mean_symmetric_distance_px"],
+        "shifted_boundary_px": shifted["mean_symmetric_distance_px"],
+        "shifted_boundary_p95_um": shifted["p95_symmetric_distance_um"],
+    }
 
 
 def _constant_block_assertion(
@@ -1640,6 +2174,17 @@ def run_smoke_tests() -> None:
         f"[pass] fingerprints reference={reference_results['reference_sha256']} "
         f"calibration={reference_results['calibration_sha256']}"
     )
+    doc_reference_results = _doc_reference_curve_test()
+    print(
+        "[pass] DoC reference loader/schema/condition/monotonic/interpolation; "
+        f"samples={doc_reference_results['samples']} "
+        f"final={doc_reference_results['final_doc']:.6f}"
+    )
+    timing_steps, timing_total = _control_timing_test()
+    print(
+        f"[pass] total-time conversion {timing_total:.1f}s -> "
+        f"{timing_steps} controls at 0.5s/control"
+    )
     physics = _physics_synchronization_test(device)
     print(
         f"[pass] latest reference dt={physics['dt']:.6g}s "
@@ -1663,6 +2208,20 @@ def run_smoke_tests() -> None:
     print(f"[pass] shape validation: {shape_message}")
     initial_loss, final_loss = _mpc_optimization_test(device)
     print(f"[pass] MPC loss {initial_loss:.6e}->{final_loss:.6e}")
+    tracking_construction = _trajectory_tracking_construction_test(device)
+    print(
+        "[pass] absolute-time stage references "
+        f"{tracking_construction['stage_times'][0]:.1f}-"
+        f"{tracking_construction['stage_times'][-1]:.1f}s; "
+        f"tracking gradient norm={tracking_construction['gradient_norm']:.3e}"
+    )
+    quantitative = _quantitative_metrics_test()
+    print(
+        "[pass] perfect geometry IoU=1 Dice=1 under/overcure=0 "
+        f"boundary={quantitative['perfect_boundary_px']:.1f}px; "
+        f"known shift={quantitative['shifted_boundary_px']:.1f}px/"
+        f"p95={quantitative['shifted_boundary_p95_um']:.1f}um"
+    )
     resolution = _resolution_modes_test(device)
     print(
         "[pass] dynamic native grids "
@@ -1716,11 +2275,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coarsen-factor", type=int, default=2)
     parser.add_argument("--horizon", type=int, default=4)
     parser.add_argument("--physics-steps-per-control", type=int, default=10)
-    parser.add_argument("--control-steps", type=int, default=8)
+    timing = parser.add_mutually_exclusive_group()
+    timing.add_argument(
+        "--total-time",
+        type=float,
+        default=None,
+        help=(
+            "total physical process time in seconds (default behavior: 20 s); "
+            "must be an integer multiple of the derived control interval"
+        ),
+    )
+    timing.add_argument(
+        "--control-steps",
+        type=int,
+        default=None,
+        help="backward-compatible explicit control-step count",
+    )
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--learning-rate", type=float, default=0.1)
-    parser.add_argument("--target-doc", type=float, default=0.9)
     parser.add_argument("--target-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--geometry-threshold",
+        type=float,
+        default=0.5,
+        help=(
+            "computational cured/uncured segmentation threshold; not an "
+            "experimentally calibrated gel point (default: 0.5)"
+        ),
+    )
+    parser.add_argument(
+        "--doc-reference",
+        type=Path,
+        default=REPOSITORY_DIR / "doc_reference_curve.json",
+        help="validated experimental time-domain DoC reference JSON",
+    )
     parser.add_argument("--target-weight", type=float, default=1.0)
     parser.add_argument("--outside-weight", type=float, default=0.5)
     parser.add_argument("--energy-weight", type=float, default=1e-4)
