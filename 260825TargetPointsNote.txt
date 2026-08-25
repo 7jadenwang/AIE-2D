@@ -1,0 +1,35 @@
+Intensity 30mW
+1) 0mMol TEMPO: 
+	40%DoC at 1.5s
+	90%DoC at 3.5s
+2) 5mMol TEMPO:  
+	40%DoC at 5.5s
+	90%DoC at 8.0s
+
+
+
+
+High Intensity: (Simulatino First): 
+## How did I select all time points??  
+## By finding the time where my target feature reach the target DoC
+## So I assume they will all be later than timesteps above
+
+1) 70mW 0mMol TEMPO:
+Lines: 
+	40% DoC at 3.5s 
+	90% DoC at 6s (We could push that to 4.5s-5s)
+Rect: 
+	40% Doc at 3.5s
+	90% DoC at 9s  (We could push that to 4.5s-5s)
+
+2) 120mW 5mMol TEMPO: 
+Lines: 
+	40% DoC at 11.5s 
+	90% DoC at 14s (Had converging problem, but is still worth check the fine features )
+Rect: 
+	40% Doc at 5s
+	90% DoC at 14s (Had converging problem, but is still worth check the fine features )
+
+Conclusion:
+For 40% Doc it's just gennerally easier, because as for the smaller feature, appearing and "fully" curing is the same thing.
+For 5mM TEMPO, it's just hard to find the timepoints, it's not impossible, but it's hard.

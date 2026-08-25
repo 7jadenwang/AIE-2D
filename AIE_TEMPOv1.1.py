@@ -16,7 +16,7 @@ imagesO=[]
 imagesT=[]
 
 #folder_name = 'test_repro'
-folder_name ='260825\\30mW_5mMol\\260825_30mW_5mMol_Sync_line_5.5s_Opt'
+folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
 os.makedirs(save_path, exist_ok=True)
@@ -142,16 +142,16 @@ TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 # PROBLEM: CANNOT be too small to create Gaussian kernel? 
 # What if it is smaller than 1 pixel?
 
-intensity=30 #mW/cm2
+intensity=120 #mW/cm2
 #Change intensity with different data pls
 chainGrowth_noise_std=0.0 #relative std of quenched per-pixel randomness in local cure rate B
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(6.0/dt)
+total_steps=int(5.5/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(5.5 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(5.0 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=27.7117
@@ -169,7 +169,7 @@ Totalinhibtion=119.7295
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/sync_line.png')
+img=Image.open('./GEO/sync_rect.png')
 img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 

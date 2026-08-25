@@ -1,4 +1,5 @@
 /.claude
+/260728_circles
 /.codex
 /.worktrees
 /.vscode
@@ -9,14 +10,12 @@
 /circles_TEMPO_10,15,20,25mW_0,1,5mM
 /c_arr.png
 /data
-/forJadenfiles.zip
 /From_Scratch
 /Inhibition_Energy Fitter.ipynb
 /inhibition_time_vs_intensity.png
 /intensityOptimizer_accum.py
 /Lshape.png
 /New Model Test_2026_05_22
-/Note
 /optc.png
 /optl.png
 /optl_Swiss.png
