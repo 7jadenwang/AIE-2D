@@ -1129,14 +1129,18 @@ def save_diagnostic_figures(
     import matplotlib.pyplot as plt
 
     repository_dir = Path(repository_dir)
+    diagnostics_dir = (
+        repository_dir / "results" / "diagnostics" / "doc_reference_fitting"
+    )
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
     for condition_id, analysis in analyses.items():
-        path = repository_dir / f"doc_reference_{condition_id}_diagnostics.png"
+        path = diagnostics_dir / f"doc_reference_{condition_id}_diagnostics.png"
         figure = plot_condition_diagnostics(analysis)
         figure.savefig(path, dpi=220, bbox_inches="tight")
         plt.close(figure)
         paths[condition_id] = path
-    comparison_path = repository_dir / "doc_reference_comparison_30mW.png"
+    comparison_path = diagnostics_dir / "doc_reference_comparison_30mW.png"
     figure = plot_reference_comparison(analyses)
     figure.savefig(comparison_path, dpi=220, bbox_inches="tight")
     plt.close(figure)

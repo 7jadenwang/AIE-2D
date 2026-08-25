@@ -28,6 +28,6 @@
 /test_repro_no_LS
 /test_repro_optl
 /Untitled-1.ipynb
-/__pycache__
+__pycache__/
 /test_repro
 /.DS_Store

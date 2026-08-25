@@ -11,13 +11,23 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+REPOSITORY_DIR = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_DIR) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_DIR))
 
 import torch
 
 from aie_model import DOC_HISTORY_MODE, AIEModel, AIEState
 from aie_reference import load_reference_config
+
+
+DEFAULT_RESULTS_DIR = (
+    REPOSITORY_DIR / "results" / "diagnostics" / "time_varying_doc"
+)
 
 
 @dataclass(frozen=True)
@@ -362,9 +372,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--csv",
         type=Path,
-        default=Path(__file__).resolve().with_name(
-            "time_varying_doc_diagnostic.csv"
-        ),
+        default=DEFAULT_RESULTS_DIR / "time_varying_doc_diagnostic.csv",
     )
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()

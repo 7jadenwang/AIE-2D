@@ -1,0 +1,1155 @@
+{
+  "schema_version": 1,
+  "diagnostic_id": "fixed_full_power_open_loop_feasibility_v1",
+  "generated_at_utc": "2026-08-24T23:07:55.003909Z",
+  "optimization": {
+    "executed": false,
+    "optimizer_instances_created": 0,
+    "description": "Both forward runs use one prepared control held fixed for every physics step."
+  },
+  "repository_dir": "C:\\uSLS\\AIE-2D-David",
+  "diagnostic_script": "C:\\uSLS\\AIE-2D-David\\diagnose_open_loop_feasibility.py",
+  "diagnostic_script_sha256": "98eb328b1d884aec1ac9ba01ab0231a06e9afce6d8e6d7a4050ff7ed53062bf1",
+  "protected_reference_model_sha256": "ccb4c9c31365ea9f27b53ef5ae6d3695bc27abd85a84cdaaa5f5557500554183",
+  "reference_structure_sha256": "9ec0cd3db40ea95e6bc91ce7431e07bc83bc29b5db75bacbec16eb9298c97fdc",
+  "doc_reference_artifact_sha256": "728424095f6d3fa07ca28f02fdcbc18bb6c92d49e0bf57d027cb88f4108db3d0",
+  "doc_history_mode": "incremental_reaction_progress_v1",
+  "doc_history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+  "absolute_reference_time": true,
+  "reference_time_restart_count": 0,
+  "target": {
+    "path": "C:\\uSLS\\AIE-2D-David\\GEO\\Lshape.png",
+    "sha256": "1901f58535b4c0c805f859ef419e5cbcfe24d9c62a5e7766155bcce71a6443d2",
+    "shape": [
+      300,
+      300
+    ],
+    "binary_threshold": 0.5,
+    "target_pixels": 22881,
+    "outside_pixels": 67119
+  },
+  "timing": {
+    "total_time_s": 20.0,
+    "physics_dt_s": 0.05,
+    "control_reporting_interval_s": 0.5,
+    "physics_sample_count_including_t0": 401,
+    "time_range_s": [
+      0.0,
+      20.0
+    ]
+  },
+  "classification_rule": {
+    "material_forward_limit": "maximum target-full-power feasibility deficit > 0.05, or duration with deficit > 0.05 is at least 0.5 s",
+    "material_controller_gap": "rise-region RMS positive gap between target-full-power and MPC DoC > 0.02 while rise-region mean target-region MPC control is < 0.95",
+    "scope_note": "These fixed diagnostic cutoffs support an approximate attribution; they are not fitted or calibrated decision thresholds."
+  },
+  "conditions": {
+    "30mW_0mM": {
+      "reference_id": "30mW_0mM",
+      "condition": {
+        "intensity_mw_cm2": 30.0,
+        "tempo_concentration_mM": 0.0
+      },
+      "reference_provenance": {
+        "artifact_path": "C:\\uSLS\\AIE-2D-David\\doc_reference_curves.json",
+        "artifact_sha256": "728424095f6d3fa07ca28f02fdcbc18bb6c92d49e0bf57d027cb88f4108db3d0",
+        "artifact_schema_version": 2,
+        "artifact_id": "doc_reference_curves_30mW_v2",
+        "artifact_exported_at_utc": "2026-08-20T22:45:20.002827Z",
+        "source_data_sha256": "1a49c5f9d85fce79f1131bda4c11fb85a4f1602ba439e1b9eb550d9f484c67c3",
+        "reference_id": "30mW_0mM",
+        "condition": {
+          "intensity_mw_cm2": 30.0,
+          "tempo_concentration_mM": 0.0
+        },
+        "condition_label": "30 mW/cm^2, 0 mM TEMPO",
+        "selected_fit_model": "isotonic_monotonic_benchmark",
+        "selected_fit_parameters": {
+          "increasing": true,
+          "lower_bound": 0.0,
+          "upper_bound": 1.0,
+          "isotonic_block_count": 474,
+          "common_grid_dt_s": 0.01
+        },
+        "fit_metrics": {
+          "sample_count": 586,
+          "parameter_count": 474,
+          "rmse": 0.0006568905239753717,
+          "mae": 0.00020713978952409076,
+          "r_squared": 0.9999965136553551,
+          "aic": -7640.408011107105,
+          "bic": -5567.4544308476015,
+          "central_threshold_time_mae_s": 0.001854572070828464
+        },
+        "production_reference_method": "equal_replicate_isotonic_linear_interp_v1",
+        "equal_replicate_construction": {
+          "common_absolute_time_grid_start_s": 0.0,
+          "common_absolute_time_grid_end_s": 5.8500000000000005,
+          "common_absolute_time_grid_dt_s": 0.01,
+          "common_absolute_time_grid_point_count": 586,
+          "replicate_weights": {
+            "T1": 0.5,
+            "T2": 0.5
+          },
+          "replicate_interpolation": "piecewise_linear_absolute_time",
+          "post_replicate_saturation_behavior": "replicate DoC held exactly at 1 after its own sustained saturation confirmation",
+          "pointwise_combination": "0.5*T1 + 0.5*T2"
+        },
+        "isotonic_regression": {
+          "increasing": true,
+          "lower_bound": 0.0,
+          "upper_bound": 1.0,
+          "block_count": 474
+        },
+        "runtime_grid_interpolation_method": "piecewise_linear",
+        "compact_diagnostic_fit": {
+          "model_id": "delayed_avrami_fixed_plateau",
+          "role": "diagnostic_only_not_MPC_reference",
+          "parameters": {
+            "y0": 0.03025375109550875,
+            "t0_s": 0.7262451087101693,
+            "tau_s": 1.3807782876032204,
+            "shape_n": 1.262491037438198
+          },
+          "parameter_std_error": {
+            "y0": 0.0023625676427054742,
+            "t0_s": 0.014124038828694832,
+            "tau_s": 0.016597113404038456,
+            "shape_n": 0.01860561829249266
+          },
+          "metrics": {
+            "sample_count": 170,
+            "parameter_count": 4,
+            "rmse": 0.012869699986091455,
+            "mae": 0.010605189622595212,
+            "r_squared": 0.9988167943702493,
+            "aic": -1471.9790533749372,
+            "bic": -1459.4358596267361,
+            "equal_replicate_rmse": 0.012842133247563768,
+            "equal_replicate_mae": 0.010580839572986982,
+            "central_threshold_time_mae_s": 0.05359961801701396,
+            "replicate_threshold_time_mae_s": 0.053872428703089614
+          },
+          "fitted_threshold_times_s": {
+            "t10_s": 0.9030199079665019,
+            "t30_s": 1.2944468821716957,
+            "t50_s": 1.722681951247842,
+            "t90_s": 3.3711437580327788,
+            "t95_s": 3.9921902797239155,
+            "t99_s": 5.330595093772935
+          }
+        },
+        "saturation_detection_rule": {
+          "rule_id": "sustained_near_unity_v1",
+          "normalized_threshold": 0.98,
+          "consecutive_samples": 4,
+          "description": "Normalize each finite CenterROI trace by its own raw maximum. Saturation is confirmed at the fourth sample in the first run of four consecutive samples with normalized signal >= 0.98. Retain data through that confirmation sample for fitting; mark every later sample excluded_from_DoC_fit with reason late_post_saturation_signal_drift. The falling tail is preserved in the raw workbook and plots but is not interpreted as decreasing conversion."
+        },
+        "saturation_times_s": {
+          "T1": 6.35100000000238,
+          "T2": 5.30099999999947,
+          "production": 5.8500000000000005
+        },
+        "threshold_times_s": {
+          "t10_s": 0.8729440780271668,
+          "t30_s": 1.3241449655755637,
+          "t50_s": 1.713911987818587,
+          "t90_s": 3.4229542078794237,
+          "t95_s": 4.144555495842968,
+          "t99_s": 5.669034866557879
+        },
+        "reference_time_range_s": [
+          0.0,
+          20.0
+        ],
+        "final_doc": 1.0,
+        "raw_source_columns": {
+          "T1": {
+            "raw_replicate_label": "T3",
+            "time": "30mW_0mM_TEMPO_T3_Time_s",
+            "signal": "30mW_0mM_TEMPO_T3_CenterROI_Intensity"
+          },
+          "T2": {
+            "raw_replicate_label": "T4",
+            "time": "30mW_0mM_TEMPO_T4_Time_s",
+            "signal": "30mW_0mM_TEMPO_T4_CenterROI_Intensity"
+          }
+        },
+        "legacy_label_notes": [
+          "The newest notebook-selected replicate pair is stored as raw T3/T4; production diagnostics call this pair T1/T2 while retaining T3/T4 here."
+        ]
+      },
+      "forward_physics_match": {
+        "matched": true,
+        "tracking_reference_id": "30mW_0mM",
+        "tracking_condition": {
+          "intensity_mw_cm2": 30.0,
+          "tempo_concentration_mM": 0.0
+        },
+        "forward_intensity_mw_cm2": 30.0,
+        "forward_tempo_concentration_mM": 0.0,
+        "forward_o2_inhibition_mj_cm2": 27.7117,
+        "forward_total_inhibition_mj_cm2": 0.0,
+        "forward_tempo_inhibition_mj_cm2": 0.0,
+        "forward_tempo_diffusivity_m2_s": 4e-10,
+        "forward_b_condition_label": "source comment: 0mMTEMPO",
+        "missing_for_physical_match": []
+      },
+      "forward_physics_parameters": {
+        "reference_model_source": "AIE_TEMPOv1.1.py",
+        "reference_model_path": "C:\\uSLS\\AIE-2D-David\\AIE_TEMPOv1.1.py",
+        "reference_model_sha256": "ccb4c9c31365ea9f27b53ef5ae6d3695bc27abd85a84cdaaa5f5557500554183",
+        "reference_structure_sha256": "9ec0cd3db40ea95e6bc91ce7431e07bc83bc29b5db75bacbec16eb9298c97fdc",
+        "model_structure_version": 2,
+        "native_shape": [
+          300,
+          300
+        ],
+        "native_pixel_pitch_m": 7.6e-06,
+        "effective_pixel_pitch_m": 7.6e-06,
+        "projector_refinement": 1,
+        "dt": 0.05,
+        "total_simulation_time_s": 3.0,
+        "loss_sample_times_s": [
+          0.2,
+          3.0,
+          1.5
+        ],
+        "intensity_mw_cm2": 30.0,
+        "tempo_concentration_mM": 0.0,
+        "o2_diffusivity_m2_s": 4e-10,
+        "tempo_diffusivity_m2_s": 4e-10,
+        "o2_inhibition_mj_cm2": 27.7117,
+        "tempo_inhibition_mj_cm2": 0.0,
+        "total_inhibition_mj_cm2": 0.0,
+        "scattering_blur_size_m": 3e-05,
+        "tempo_gaussian_sigma_scale": 0.8,
+        "o2_diffusion_enabled": true,
+        "tempo_diffusion_enabled": true,
+        "chain_growth_noise_std": 0.0,
+        "chain_growth_noise_enabled": true,
+        "b_slope": 0.0133,
+        "b_intercept": 0.4638,
+        "b_condition_label": "source comment: 0mMTEMPO",
+        "minimum_normalized_intensity": 3.92156862745098e-15,
+        "division_epsilon": 1.176470588235294e-13,
+        "mask_grayscale_max": 255.0,
+        "doc_model_id": "reference_intensity_dependent_B_v2",
+        "doc_model_formula": "torch.where((O2next <= 0) & (TEMPOnext <= 0), 1 - torch.exp(-(B * t).clamp(min=0)), DoC[-1])",
+        "doc_history_mode": "incremental_reaction_progress_v1",
+        "doc_history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+        "doc_fit_applied_to_governing_law": false,
+        "doc_calibration_source": "DoC curve.ipynb -> doc_fit_parameters.json",
+        "doc_calibration_path": "C:\\uSLS\\AIE-2D-David\\doc_fit_parameters.json",
+        "doc_calibration_sha256": "793e37d121f3ac140f0c6e28a2ff9c467594659d4c62eb32f71bd334a7dc884f",
+        "doc_fit_selection_status": "not_selected:legacy_doc_fit_parameters_not_used_for_runtime_tracking",
+        "available_doc_fit_condition_ids": [
+          "30mW_0mM_TEMPO",
+          "40mW_1mM_TEMPO",
+          "20mW_5mM_TEMPO"
+        ],
+        "doc_fit_calibration_id": null,
+        "doc_fit_condition_id": null,
+        "doc_fit_condition_label": null,
+        "doc_fit_formula_id": null,
+        "doc_fit_formula": null,
+        "doc_fit_exported_at_utc": null,
+        "doc_fit_a": null,
+        "doc_fit_b": null,
+        "doc_fit_c": null
+      },
+      "reference_production_saturation_time_s": 5.8500000000000005,
+      "reference_threshold_times_s": {
+        "t10_s": 0.8729440780271668,
+        "t30_s": 1.3241449655755637,
+        "t50_s": 1.7139119878185867,
+        "t90_s": 3.422954207879424,
+        "t95_s": 4.144555495842968,
+        "t99_s": 5.669034866557879
+      },
+      "uniform_full_power": {
+        "control_definition": "uniform_full_field_u_equals_1_for_entire_run",
+        "control_min": 1.0,
+        "control_max": 1.0,
+        "threshold_times_s": {
+          "t10_s": 1.0459197523907382,
+          "t30_s": 1.3373214896064656,
+          "t50_s": 1.727360699687226,
+          "t90_s": 3.5925974008301016,
+          "t95_s": 4.3959021108036245,
+          "t99_s": 6.261401535240752
+        },
+        "threshold_deltas_vs_reference_s": {
+          "delta_t10_s": 0.17297567436357142,
+          "delta_t30_s": 0.01317652403090186,
+          "delta_t50_s": 0.013448711868639274,
+          "delta_t90_s": 0.16964319295067742,
+          "delta_t95_s": 0.25134661496065647,
+          "delta_t99_s": 0.5923666686828737
+        },
+        "tracking_error_metrics": {
+          "full_duration_rmse": 0.014925232489559414,
+          "full_duration_mae": 0.006278595974020995,
+          "full_duration_sample_count": 401,
+          "pre_saturation_rmse": 0.027164219317970518,
+          "pre_saturation_mae": 0.018595656446473638,
+          "pre_saturation_sample_count": 118,
+          "rise_region_rmse": 0.023415415280997116,
+          "rise_region_mae": 0.01552575768674321,
+          "rise_region_sample_count": 96,
+          "maximum_absolute_error": 0.10846720698860232,
+          "maximum_positive_feasibility_deficit": 0.10846720698860232
+        },
+        "validation": {
+          "all_states_finite": true,
+          "doc_min": 0.0,
+          "doc_max": 0.9999999403953552,
+          "reaction_progress_mean_minimum_step_increment": 0.0,
+          "reaction_progress_mean_monotonic": true,
+          "reaction_progress_pointwise_minimum_step_increment": 0.0,
+          "reaction_progress_pointwise_decrease_step_count": 0,
+          "reaction_progress_pointwise_note": "The unchanged governing equations can yield local negative increments at diffusion/cure-transition boundary pixels; the reported full-field or target-region mean is required monotonic.",
+          "sample_count": 401,
+          "time_start_s": 0.0,
+          "time_end_s": 20.0
+        }
+      },
+      "target_full_power": {
+        "control_definition": "binary_Lshape_u_equals_1_inside_target_u_equals_0_outside_for_entire_run",
+        "control_min": 0.0,
+        "control_max": 1.0,
+        "control_target_mean": 1.0,
+        "control_outside_mean": 0.0,
+        "threshold_times_s": {
+          "t10_s": 1.0625995998856816,
+          "t30_s": 1.3801691446163646,
+          "t50_s": 1.8010457313862867,
+          "t90_s": 3.916470529883443,
+          "t95_s": 4.893075957951847,
+          "t99_s": 7.348216164696911
+        },
+        "threshold_deltas_vs_reference_s": {
+          "delta_t10_s": 0.18965552185851486,
+          "delta_t30_s": 0.056024179040800925,
+          "delta_t50_s": 0.08713374356769998,
+          "delta_t90_s": 0.4935163220040186,
+          "delta_t95_s": 0.7485204621088792,
+          "delta_t99_s": 1.6791812981390324
+        },
+        "tracking_error_metrics": {
+          "full_duration_rmse": 0.023541051019082705,
+          "full_duration_mae": 0.013511070653684244,
+          "full_duration_sample_count": 401,
+          "pre_saturation_rmse": 0.042370856539048485,
+          "pre_saturation_mae": 0.03845544308423836,
+          "pre_saturation_sample_count": 118,
+          "rise_region_rmse": 0.04281433346168717,
+          "rise_region_mae": 0.03942689288552243,
+          "rise_region_sample_count": 96,
+          "maximum_absolute_error": 0.10846720698860232,
+          "maximum_positive_feasibility_deficit": 0.10846720698860232
+        },
+        "feasibility": {
+          "maximum_deficit": 0.10846720698860232,
+          "time_of_maximum_deficit_s": 0.9,
+          "duration_deficit_gt_0_01_s": 7.348216164696913,
+          "duration_deficit_gt_0_05_s": 1.3329491547792696,
+          "largest_contiguous_infeasible_interval": {
+            "start_s": 0.0,
+            "end_s": 20.0,
+            "duration_s": 20.0
+          },
+          "intervals_deficit_gt_0_01_s": [
+            [
+              0.0,
+              7.348216164696913
+            ]
+          ],
+          "intervals_deficit_gt_0_05_s": [
+            [
+              0.6523435275463467,
+              1.1540272612977192
+            ],
+            [
+              2.22614095961727,
+              2.7423450307333503
+            ],
+            [
+              2.834265116007647,
+              3.028872395894433
+            ],
+            [
+              3.07226180862325,
+              3.1927158786482805
+            ]
+          ]
+        },
+        "validation": {
+          "all_states_finite": true,
+          "doc_min": 0.0,
+          "doc_max": 0.9999999403953552,
+          "reaction_progress_mean_minimum_step_increment": 0.0,
+          "reaction_progress_mean_monotonic": true,
+          "reaction_progress_pointwise_minimum_step_increment": 0.0,
+          "reaction_progress_pointwise_decrease_step_count": 0,
+          "reaction_progress_pointwise_note": "The unchanged governing equations can yield local negative increments at diffusion/cure-transition boundary pixels; the reported full-field or target-region mean is required monotonic.",
+          "sample_count": 401,
+          "time_start_s": 0.0,
+          "time_end_s": 20.0
+        }
+      },
+      "mpc_comparison": {
+        "loaded": true,
+        "source_path": "C:\\uSLS\\AIE-2D-David\\tracking_Lshape_30mW_0mM_iso_20s\\mpc_results_native.npz",
+        "source_sha256": "dc18e0225096a581717237158977ac38f26240ad45e591a7607f3897a0169fa3",
+        "stored_reference_model_sha256": "ccb4c9c31365ea9f27b53ef5ae6d3695bc27abd85a84cdaaa5f5557500554183",
+        "stored_doc_reference_sha256": "728424095f6d3fa07ca28f02fdcbc18bb6c92d49e0bf57d027cb88f4108db3d0",
+        "mean_target_region_control": 0.9505825311814041,
+        "maximum_target_region_control": 0.9933582941274284,
+        "minimum_target_region_control": 0.9285016878063699,
+        "fraction_control_times_target_mean_ge_0_95": 0.475,
+        "control_time_count": 40,
+        "control_times_s": [
+          0.5,
+          1.0,
+          1.5,
+          2.0,
+          2.5,
+          3.0,
+          3.5,
+          4.0,
+          4.5,
+          5.0,
+          5.5,
+          6.0,
+          6.5,
+          7.0,
+          7.5,
+          8.0,
+          8.5,
+          9.0,
+          9.5,
+          10.0,
+          10.5,
+          11.0,
+          11.5,
+          12.0,
+          12.5,
+          13.0,
+          13.5,
+          14.0,
+          14.5,
+          15.0,
+          15.5,
+          16.0,
+          16.5,
+          17.0,
+          17.5,
+          18.0,
+          18.5,
+          19.0,
+          19.5,
+          20.0
+        ],
+        "target_region_control_mean_at_control_times": [
+          0.9860612859697193,
+          0.9933582941274284,
+          0.9850061879745288,
+          0.9848568951571448,
+          0.9821026076944781,
+          0.9760802656973498,
+          0.9679607916088518,
+          0.9612918499611993,
+          0.9582445782769125,
+          0.9559770707097358,
+          0.9552930612146765,
+          0.9541557639268483,
+          0.9530053190876148,
+          0.952350448390123,
+          0.9519326887476295,
+          0.951599926194275,
+          0.9512721480854045,
+          0.9508810281601677,
+          0.9503284045234798,
+          0.9494670867007526,
+          0.9482349033378862,
+          0.946880288853375,
+          0.945664043311598,
+          0.9445569801629399,
+          0.9434728481269578,
+          0.9423427006011306,
+          0.9411793433727794,
+          0.9399739691246556,
+          0.9388136900256934,
+          0.9376673211404559,
+          0.9365865648745915,
+          0.9355106391327709,
+          0.9345258451341859,
+          0.9335633637616604,
+          0.9326535935847764,
+          0.9317368031891993,
+          0.9308871996724057,
+          0.9300439857852423,
+          0.9292797740491672,
+          0.9285016878063699
+        ],
+        "full_power_target_doc_at_control_times": [
+          0.0,
+          0.055378179997205734,
+          0.364084929227829,
+          0.5730968713760376,
+          0.7112456560134888,
+          0.8028004169464111,
+          0.864331066608429,
+          0.9058865308761597,
+          0.9341664910316467,
+          0.9535702466964722,
+          0.9669957756996155,
+          0.9763574600219727,
+          0.9829331040382385,
+          0.9875825047492981,
+          0.9908885955810547,
+          0.9932534694671631,
+          0.994957447052002,
+          0.9961919784545898,
+          0.9970913529396057,
+          0.9977504014968872,
+          0.9982361197471619,
+          0.9985964894294739,
+          0.9988659024238586,
+          0.9990686178207397,
+          0.9992222785949707,
+          0.9993399381637573,
+          0.9994306564331055,
+          0.9995013475418091,
+          0.9995564818382263,
+          0.9996001720428467,
+          0.9996349811553955,
+          0.9996629953384399,
+          0.9996853470802307,
+          0.9997034668922424,
+          0.9997182488441467,
+          0.9997302889823914,
+          0.9997400045394897,
+          0.9997478723526001,
+          0.9997542500495911,
+          0.9997595548629761
+        ],
+        "positive_full_power_minus_mpc_doc": [
+          0.0,
+          0.007158979773521423,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rise_region_rms_positive_full_power_minus_mpc_doc": 0.002263868180740408,
+        "maximum_positive_full_power_minus_mpc_doc": 0.007158979773521423,
+        "mean_positive_full_power_minus_mpc_doc": 0.00017897449433803558,
+        "rise_region_control_time_count": 10,
+        "rise_region_mean_target_control": 0.9720171602422306,
+        "rise_region_maximum_target_control": 0.9933582941274284,
+        "rise_region_minimum_target_control": 0.9552930612146765,
+        "rise_region_fraction_target_mean_ge_0_95": 1.0
+      },
+      "classification": "FORWARD-PHYSICS-LIMITED",
+      "classification_evidence": {
+        "material_forward_limit": true,
+        "material_controller_gap": false,
+        "rule": {
+          "material_forward_limit": "maximum target-full-power feasibility deficit > 0.05, or duration with deficit > 0.05 is at least 0.5 s",
+          "material_controller_gap": "rise-region RMS positive gap between target-full-power and MPC DoC > 0.02 while rise-region mean target-region MPC control is < 0.95",
+          "scope_note": "These fixed diagnostic cutoffs support an approximate attribution; they are not fitted or calibrated decision thresholds."
+        }
+      },
+      "output_csv": "C:\\uSLS\\AIE-2D-David\\open_loop_feasibility_30mW_0mM.csv",
+      "output_plot": "C:\\uSLS\\AIE-2D-David\\open_loop_feasibility_30mW_0mM.png"
+    },
+    "30mW_5mM": {
+      "reference_id": "30mW_5mM",
+      "condition": {
+        "intensity_mw_cm2": 30.0,
+        "tempo_concentration_mM": 5.0
+      },
+      "reference_provenance": {
+        "artifact_path": "C:\\uSLS\\AIE-2D-David\\doc_reference_curves.json",
+        "artifact_sha256": "728424095f6d3fa07ca28f02fdcbc18bb6c92d49e0bf57d027cb88f4108db3d0",
+        "artifact_schema_version": 2,
+        "artifact_id": "doc_reference_curves_30mW_v2",
+        "artifact_exported_at_utc": "2026-08-20T22:45:20.002827Z",
+        "source_data_sha256": "1a49c5f9d85fce79f1131bda4c11fb85a4f1602ba439e1b9eb550d9f484c67c3",
+        "reference_id": "30mW_5mM",
+        "condition": {
+          "intensity_mw_cm2": 30.0,
+          "tempo_concentration_mM": 5.0
+        },
+        "condition_label": "30 mW/cm^2, 5 mM TEMPO",
+        "selected_fit_model": "isotonic_monotonic_benchmark",
+        "selected_fit_parameters": {
+          "increasing": true,
+          "lower_bound": 0.0,
+          "upper_bound": 1.0,
+          "isotonic_block_count": 661,
+          "common_grid_dt_s": 0.01
+        },
+        "fit_metrics": {
+          "sample_count": 971,
+          "parameter_count": 661,
+          "rmse": 0.0002971401998676408,
+          "mae": 7.101741251831823e-05,
+          "r_squared": 0.9999994302736761,
+          "aic": -14449.577178561878,
+          "bic": -11225.003383021312,
+          "central_threshold_time_mae_s": 0.01728444172753445
+        },
+        "production_reference_method": "equal_replicate_isotonic_linear_interp_v1",
+        "equal_replicate_construction": {
+          "common_absolute_time_grid_start_s": 0.0,
+          "common_absolute_time_grid_end_s": 9.700000000000001,
+          "common_absolute_time_grid_dt_s": 0.01,
+          "common_absolute_time_grid_point_count": 971,
+          "replicate_weights": {
+            "T1": 0.5,
+            "T2": 0.5
+          },
+          "replicate_interpolation": "piecewise_linear_absolute_time",
+          "post_replicate_saturation_behavior": "replicate DoC held exactly at 1 after its own sustained saturation confirmation",
+          "pointwise_combination": "0.5*T1 + 0.5*T2"
+        },
+        "isotonic_regression": {
+          "increasing": true,
+          "lower_bound": 0.0,
+          "upper_bound": 1.0,
+          "block_count": 661
+        },
+        "runtime_grid_interpolation_method": "piecewise_linear",
+        "compact_diagnostic_fit": {
+          "model_id": "delayed_avrami_fixed_plateau",
+          "role": "diagnostic_only_not_MPC_reference",
+          "parameters": {
+            "y0": 0.016591826338471848,
+            "t0_s": 2.6936081431825443,
+            "tau_s": 3.502516432057981,
+            "shape_n": 2.4071651483605385
+          },
+          "parameter_std_error": {
+            "y0": 0.0008301540568326446,
+            "t0_s": 0.049527641111182394,
+            "tau_s": 0.051039727992638444,
+            "shape_n": 0.040801772561038084
+          },
+          "metrics": {
+            "sample_count": 222,
+            "parameter_count": 4,
+            "rmse": 0.007719947227216984,
+            "mae": 0.005134045918706317,
+            "r_squared": 0.9995906662254607,
+            "aic": -2151.592801364763,
+            "bic": -2137.982091837274,
+            "equal_replicate_rmse": 0.0077586305669931285,
+            "equal_replicate_mae": 0.005175420801467667,
+            "central_threshold_time_mae_s": 0.03107501692607668,
+            "replicate_threshold_time_mae_s": 0.03378456300077137
+          },
+          "fitted_threshold_times_s": {
+            "t10_s": 3.9735091156103857,
+            "t30_s": 4.9308574775430225,
+            "t50_s": 5.671072582582962,
+            "t90_s": 7.631464191158629,
+            "t95_s": 8.205766391265307,
+            "t99_s": 9.28919285056932
+          }
+        },
+        "saturation_detection_rule": {
+          "rule_id": "sustained_near_unity_v1",
+          "normalized_threshold": 0.98,
+          "consecutive_samples": 4,
+          "description": "Normalize each finite CenterROI trace by its own raw maximum. Saturation is confirmed at the fourth sample in the first run of four consecutive samples with normalized signal >= 0.98. Retain data through that confirmation sample for fitting; mark every later sample excluded_from_DoC_fit with reason late_post_saturation_signal_drift. The falling tail is preserved in the raw workbook and plots but is not interpreted as decreasing conversion."
+        },
+        "saturation_times_s": {
+          "T1": 9.45000000000436,
+          "T2": 9.89899999999761,
+          "production": 9.700000000000001
+        },
+        "threshold_times_s": {
+          "t10_s": 3.9731909652394335,
+          "t30_s": 4.913227345547678,
+          "t50_s": 5.697393957238907,
+          "t90_s": 7.600494035372014,
+          "t95_s": 8.353892451071326,
+          "t99_s": 9.482347348242731
+        },
+        "reference_time_range_s": [
+          0.0,
+          20.0
+        ],
+        "final_doc": 1.0,
+        "raw_source_columns": {
+          "T1": {
+            "raw_replicate_label": "T2",
+            "time": "30mW_5mM_TEMPO_T2_Time_s",
+            "signal": "30mW_5mM_TEMPO_T2_CenterROI_Intensity"
+          },
+          "T2": {
+            "raw_replicate_label": "T3",
+            "time": "30mW_5mM_TEMPO_T3_Time_s",
+            "signal": "30mW_5mM_TEMPO_T3_CenterROI_Intensity"
+          }
+        },
+        "legacy_label_notes": [
+          "The raw workbook sheet/columns and collaborator-confirmed scientific metadata agree: this is 30 mW/cm^2 and 5 mM TEMPO. Raw T2/T3 replicate names are retained verbatim."
+        ]
+      },
+      "forward_physics_match": {
+        "matched": true,
+        "tracking_reference_id": "30mW_5mM",
+        "tracking_condition": {
+          "intensity_mw_cm2": 30.0,
+          "tempo_concentration_mM": 5.0
+        },
+        "forward_intensity_mw_cm2": 30.0,
+        "forward_tempo_concentration_mM": 5.0,
+        "forward_o2_inhibition_mj_cm2": 27.7117,
+        "forward_total_inhibition_mj_cm2": 119.7295,
+        "forward_tempo_inhibition_mj_cm2": 92.0178,
+        "forward_tempo_diffusivity_m2_s": 4e-10,
+        "forward_b_condition_label": "5mMTEMPO (validated commented alternative in AIE_TEMPOv1.1.py)",
+        "missing_for_physical_match": []
+      },
+      "forward_physics_parameters": {
+        "reference_model_source": "AIE_TEMPOv1.1.py",
+        "reference_model_path": "C:\\uSLS\\AIE-2D-David\\AIE_TEMPOv1.1.py",
+        "reference_model_sha256": "ccb4c9c31365ea9f27b53ef5ae6d3695bc27abd85a84cdaaa5f5557500554183",
+        "reference_structure_sha256": "9ec0cd3db40ea95e6bc91ce7431e07bc83bc29b5db75bacbec16eb9298c97fdc",
+        "model_structure_version": 2,
+        "native_shape": [
+          300,
+          300
+        ],
+        "native_pixel_pitch_m": 7.6e-06,
+        "effective_pixel_pitch_m": 7.6e-06,
+        "projector_refinement": 1,
+        "dt": 0.05,
+        "total_simulation_time_s": 3.0,
+        "loss_sample_times_s": [
+          0.2,
+          3.0,
+          1.5
+        ],
+        "intensity_mw_cm2": 30.0,
+        "tempo_concentration_mM": 5.0,
+        "o2_diffusivity_m2_s": 4e-10,
+        "tempo_diffusivity_m2_s": 4e-10,
+        "o2_inhibition_mj_cm2": 27.7117,
+        "tempo_inhibition_mj_cm2": 92.0178,
+        "total_inhibition_mj_cm2": 119.7295,
+        "scattering_blur_size_m": 3e-05,
+        "tempo_gaussian_sigma_scale": 0.8,
+        "o2_diffusion_enabled": true,
+        "tempo_diffusion_enabled": true,
+        "chain_growth_noise_std": 0.0,
+        "chain_growth_noise_enabled": true,
+        "b_slope": 0.0069,
+        "b_intercept": 0.3815,
+        "b_condition_label": "5mMTEMPO (validated commented alternative in AIE_TEMPOv1.1.py)",
+        "minimum_normalized_intensity": 3.92156862745098e-15,
+        "division_epsilon": 1.176470588235294e-13,
+        "mask_grayscale_max": 255.0,
+        "doc_model_id": "reference_intensity_dependent_B_v2",
+        "doc_model_formula": "torch.where((O2next <= 0) & (TEMPOnext <= 0), 1 - torch.exp(-(B * t).clamp(min=0)), DoC[-1])",
+        "doc_history_mode": "incremental_reaction_progress_v1",
+        "doc_history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+        "doc_fit_applied_to_governing_law": false,
+        "doc_calibration_source": "DoC curve.ipynb -> doc_fit_parameters.json",
+        "doc_calibration_path": "C:\\uSLS\\AIE-2D-David\\doc_fit_parameters.json",
+        "doc_calibration_sha256": "793e37d121f3ac140f0c6e28a2ff9c467594659d4c62eb32f71bd334a7dc884f",
+        "doc_fit_selection_status": "not_selected:legacy_doc_fit_parameters_not_used_for_runtime_tracking",
+        "available_doc_fit_condition_ids": [
+          "30mW_0mM_TEMPO",
+          "40mW_1mM_TEMPO",
+          "20mW_5mM_TEMPO"
+        ],
+        "doc_fit_calibration_id": null,
+        "doc_fit_condition_id": null,
+        "doc_fit_condition_label": null,
+        "doc_fit_formula_id": null,
+        "doc_fit_formula": null,
+        "doc_fit_exported_at_utc": null,
+        "doc_fit_a": null,
+        "doc_fit_b": null,
+        "doc_fit_c": null
+      },
+      "reference_production_saturation_time_s": 9.700000000000001,
+      "reference_threshold_times_s": {
+        "t10_s": 3.9731909652394335,
+        "t30_s": 4.913227345547678,
+        "t50_s": 5.697393957238907,
+        "t90_s": 7.600494035372014,
+        "t95_s": 8.353892451071326,
+        "t99_s": 9.482347348242731
+      },
+      "uniform_full_power": {
+        "control_definition": "uniform_full_field_u_equals_1_for_entire_run",
+        "control_min": 1.0,
+        "control_max": 1.0,
+        "threshold_times_s": {
+          "t10_s": 4.146342603113993,
+          "t30_s": 4.573517949935987,
+          "t50_s": 5.145144566061606,
+          "t90_s": 7.880069274735929,
+          "t95_s": 9.057820963914573,
+          "t99_s": 11.792646634615384
+        },
+        "threshold_deltas_vs_reference_s": {
+          "delta_t10_s": 0.17315163787455967,
+          "delta_t30_s": -0.339709395611691,
+          "delta_t50_s": -0.552249391177301,
+          "delta_t90_s": 0.2795752393639148,
+          "delta_t95_s": 0.7039285128432464,
+          "delta_t99_s": 2.3102992863726524
+        },
+        "tracking_error_metrics": {
+          "full_duration_rmse": 0.04322010987498568,
+          "full_duration_mae": 0.02469259971654278,
+          "full_duration_sample_count": 401,
+          "pre_saturation_rmse": 0.06117202295781075,
+          "pre_saturation_mae": 0.044908016980439204,
+          "pre_saturation_sample_count": 195,
+          "rise_region_rmse": 0.07721774364076629,
+          "rise_region_mae": 0.060785140627092775,
+          "rise_region_sample_count": 110,
+          "maximum_absolute_error": 0.14837229737338142,
+          "maximum_positive_feasibility_deficit": 0.09652935306555305
+        },
+        "validation": {
+          "all_states_finite": true,
+          "doc_min": 0.0,
+          "doc_max": 0.999920129776001,
+          "reaction_progress_mean_minimum_step_increment": 0.0,
+          "reaction_progress_mean_monotonic": true,
+          "reaction_progress_pointwise_minimum_step_increment": 0.0,
+          "reaction_progress_pointwise_decrease_step_count": 0,
+          "reaction_progress_pointwise_note": "The unchanged governing equations can yield local negative increments at diffusion/cure-transition boundary pixels; the reported full-field or target-region mean is required monotonic.",
+          "sample_count": 401,
+          "time_start_s": 0.0,
+          "time_end_s": 20.0
+        }
+      },
+      "target_full_power": {
+        "control_definition": "binary_Lshape_u_equals_1_inside_target_u_equals_0_outside_for_entire_run",
+        "control_min": 0.0,
+        "control_max": 1.0,
+        "control_target_mean": 1.0,
+        "control_outside_mean": 0.0,
+        "threshold_times_s": {
+          "t10_s": 4.209009698433717,
+          "t30_s": 4.740232203087687,
+          "t50_s": 5.447026310330435,
+          "t90_s": 9.613137962128045,
+          "t95_s": 12.90258990485405,
+          "t99_s": null
+        },
+        "threshold_deltas_vs_reference_s": {
+          "delta_t10_s": 0.2358187331942836,
+          "delta_t30_s": -0.1729951424599907,
+          "delta_t50_s": -0.25036764690847146,
+          "delta_t90_s": 2.0126439267560308,
+          "delta_t95_s": 4.548697453782724,
+          "delta_t99_s": null
+        },
+        "tracking_error_metrics": {
+          "full_duration_rmse": 0.05498846356926729,
+          "full_duration_mae": 0.04817893565153189,
+          "full_duration_sample_count": 401,
+          "pre_saturation_rmse": 0.06005388711113207,
+          "pre_saturation_mae": 0.04968402062942319,
+          "pre_saturation_sample_count": 195,
+          "rise_region_rmse": 0.07319355815407434,
+          "rise_region_mae": 0.06634143941565086,
+          "rise_region_sample_count": 110,
+          "maximum_absolute_error": 0.10654842796815234,
+          "maximum_positive_feasibility_deficit": 0.10654842796815234
+        },
+        "feasibility": {
+          "maximum_deficit": 0.10654842796815234,
+          "time_of_maximum_deficit_s": 8.0,
+          "duration_deficit_gt_0_01_s": 17.968643794543304,
+          "duration_deficit_gt_0_05_s": 6.674796103526425,
+          "largest_contiguous_infeasible_interval": {
+            "start_s": 6.300000000000001,
+            "end_s": 20.0,
+            "duration_s": 13.7
+          },
+          "intervals_deficit_gt_0_01_s": [
+            [
+              0.0,
+              4.363393757767894
+            ],
+            [
+              6.394749963224592,
+              20.0
+            ]
+          ],
+          "intervals_deficit_gt_0_05_s": [
+            [
+              3.6209163752931315,
+              4.179029767534897
+            ],
+            [
+              6.785907193569396,
+              12.902589904854056
+            ]
+          ]
+        },
+        "validation": {
+          "all_states_finite": true,
+          "doc_min": 0.0,
+          "doc_max": 0.999920129776001,
+          "reaction_progress_mean_minimum_step_increment": 0.0,
+          "reaction_progress_mean_monotonic": true,
+          "reaction_progress_pointwise_minimum_step_increment": -0.002891678363084793,
+          "reaction_progress_pointwise_decrease_step_count": 17,
+          "reaction_progress_pointwise_note": "The unchanged governing equations can yield local negative increments at diffusion/cure-transition boundary pixels; the reported full-field or target-region mean is required monotonic.",
+          "sample_count": 401,
+          "time_start_s": 0.0,
+          "time_end_s": 20.0
+        }
+      },
+      "mpc_comparison": {
+        "loaded": true,
+        "source_path": "C:\\uSLS\\AIE-2D-David\\tracking_Lshape_30mW_5mM_iso_20s\\mpc_results_native.npz",
+        "source_sha256": "372b251575783a0cc3bc167975acf6e8066eeb29a38b92b2dfeb6a91e6d5a3be",
+        "stored_reference_model_sha256": "ccb4c9c31365ea9f27b53ef5ae6d3695bc27abd85a84cdaaa5f5557500554183",
+        "stored_doc_reference_sha256": "728424095f6d3fa07ca28f02fdcbc18bb6c92d49e0bf57d027cb88f4108db3d0",
+        "mean_target_region_control": 0.940873714536982,
+        "maximum_target_region_control": 0.983836540433526,
+        "minimum_target_region_control": 0.5038071205855552,
+        "fraction_control_times_target_mean_ge_0_95": 0.85,
+        "control_time_count": 40,
+        "control_times_s": [
+          0.5,
+          1.0,
+          1.5,
+          2.0,
+          2.5,
+          3.0,
+          3.5,
+          4.0,
+          4.5,
+          5.0,
+          5.5,
+          6.0,
+          6.5,
+          7.0,
+          7.5,
+          8.0,
+          8.5,
+          9.0,
+          9.5,
+          10.0,
+          10.5,
+          11.0,
+          11.5,
+          12.0,
+          12.5,
+          13.0,
+          13.5,
+          14.0,
+          14.5,
+          15.0,
+          15.5,
+          16.0,
+          16.5,
+          17.0,
+          17.5,
+          18.0,
+          18.5,
+          19.0,
+          19.5,
+          20.0
+        ],
+        "target_region_control_mean_at_control_times": [
+          0.9498808979988098,
+          0.9526330495202653,
+          0.9576056371211985,
+          0.945381298629321,
+          0.9452136671578029,
+          0.9515313655313852,
+          0.9652328274658596,
+          0.974408230338291,
+          0.9647637972579147,
+          0.5038071205855552,
+          0.734496844280621,
+          0.9485077608517899,
+          0.981173188727738,
+          0.983836540433526,
+          0.982180935970986,
+          0.9788725927291719,
+          0.9739978956486409,
+          0.9693009482100681,
+          0.9652878628093449,
+          0.9613095888161617,
+          0.9580059295678847,
+          0.9558063622491301,
+          0.9544094917339794,
+          0.9535304354384492,
+          0.9529664653835844,
+          0.9525884993035374,
+          0.9523175223469396,
+          0.952107337923568,
+          0.9519312145029465,
+          0.9517735937019832,
+          0.9516262435177438,
+          0.9514854360770879,
+          0.9513479533856536,
+          0.9512119088513228,
+          0.9510764661647396,
+          0.9509410348202579,
+          0.9508052259822976,
+          0.950668772856186,
+          0.9505320089919225,
+          0.950394628595615
+        ],
+        "full_power_target_doc_at_control_times": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.012506043538451195,
+          0.21503086388111115,
+          0.38154107332229614,
+          0.5123218297958374,
+          0.6129088997840881,
+          0.6909347772598267,
+          0.7510854601860046,
+          0.7972531318664551,
+          0.8325546979904175,
+          0.8594388365745544,
+          0.880262553691864,
+          0.89676433801651,
+          0.9099276661872864,
+          0.9205302596092224,
+          0.9291418790817261,
+          0.9361855983734131,
+          0.9419767260551453,
+          0.9467583298683167,
+          0.9507132172584534,
+          0.9539905786514282,
+          0.9567126631736755,
+          0.9589740633964539,
+          0.960851788520813,
+          0.9624101519584656,
+          0.9637022018432617,
+          0.964772641658783,
+          0.9656592607498169,
+          0.9663947224617004,
+          0.9670082926750183,
+          0.9675223231315613,
+          0.9679551124572754,
+          0.9683218598365784,
+          0.9686350226402283
+        ],
+        "positive_full_power_minus_mpc_doc": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.012506043538451195,
+          0.08304537832736969,
+          0.09523367881774902,
+          0.08295735716819763,
+          0.05894738435745239,
+          0.037778258323669434,
+          0.01981377601623535,
+          0.003520071506500244,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rise_region_rms_positive_full_power_minus_mpc_doc": 0.050732166794220976,
+        "maximum_positive_full_power_minus_mpc_doc": 0.09523367881774902,
+        "mean_positive_full_power_minus_mpc_doc": 0.009845048701390625,
+        "rise_region_control_time_count": 11,
+        "rise_region_mean_target_control": 0.9086678050031183,
+        "rise_region_maximum_target_control": 0.983836540433526,
+        "rise_region_minimum_target_control": 0.5038071205855552,
+        "rise_region_fraction_target_mean_ge_0_95": 0.7272727272727273
+      },
+      "classification": "MIXED",
+      "classification_evidence": {
+        "material_forward_limit": true,
+        "material_controller_gap": true,
+        "rule": {
+          "material_forward_limit": "maximum target-full-power feasibility deficit > 0.05, or duration with deficit > 0.05 is at least 0.5 s",
+          "material_controller_gap": "rise-region RMS positive gap between target-full-power and MPC DoC > 0.02 while rise-region mean target-region MPC control is < 0.95",
+          "scope_note": "These fixed diagnostic cutoffs support an approximate attribution; they are not fitted or calibrated decision thresholds."
+        }
+      },
+      "output_csv": "C:\\uSLS\\AIE-2D-David\\open_loop_feasibility_30mW_5mM.csv",
+      "output_plot": "C:\\uSLS\\AIE-2D-David\\open_loop_feasibility_30mW_5mM.png"
+    }
+  },
+  "combined_plot": "C:\\uSLS\\AIE-2D-David\\open_loop_feasibility_comparison.png"
+}
