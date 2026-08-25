@@ -1,0 +1,7 @@
+260729.zip was split into <100MB parts to satisfy GitHub's 100MB file size limit.
+
+To reassemble on Windows (PowerShell):
+  cmd /c copy /b 260729.zip.part00+260729.zip.part01+260729.zip.part02 260729.zip
+
+To reassemble on macOS/Linux/Git Bash:
+  cat 260729.zip.part* > 260729.zip

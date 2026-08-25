@@ -1,4 +1,5 @@
 /.claude
+/Note
 /.codex
 /.worktrees
 /.vscode
@@ -9,14 +10,12 @@
 /circles_TEMPO_10,15,20,25mW_0,1,5mM
 /c_arr.png
 /data
-/forJadenfiles.zip
 /From_Scratch
 /Inhibition_Energy Fitter.ipynb
 /inhibition_time_vs_intensity.png
 /intensityOptimizer_accum.py
 /Lshape.png
 /New Model Test_2026_05_22
-/Note
 /optc.png
 /optl.png
 /optl_Swiss.png
@@ -28,6 +27,17 @@
 /test_repro_no_LS
 /test_repro_optl
 /Untitled-1.ipynb
-__pycache__/
+/__pycache__
 /test_repro
 /.DS_Store
+
+# generated simulation/optimization output images (AIE_TEMPOv1.1.py), any run folder
+**/aaa_*.png
+**/DoC_*.png
+**/O2_*.png
+**/TEMPO_*.png
+**/allDoC.gif
+**/allO2.gif
+**/allTEMPO.gif
+
+**/*.zip
