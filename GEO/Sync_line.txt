@@ -1,5 +1,5 @@
 in total 28 lines
 
-1st row: 17 lines, width from 1 to 17px
+1st row: 7 lines, width: 1, 2, 3, 4, 5, 6, 7 + 5 lines, width: 8, 13, 18, 23, 28
 
-2nd row: 11 lines, width from 18 to 28px
+2nd row: 5 lines, width: 30, 40, 50, 60, 70

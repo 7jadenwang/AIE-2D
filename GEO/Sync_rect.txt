@@ -1,9 +1,7 @@
-in total 
+in total 19 rects
 
-1st row: 14 rects, width from 1 to 14 px
+1st row: 10 rects, width: 1, 2, 4, 6, 8, 10, 12, 14, 16, 18
 
-2nd row: 10 rects, width from 15 to 24 px
+2nd row: 6 rects, width:20, 30, 40, 50, 60, 70
 
-3rd row:8 rects, width from 25 to 32 px
-
-4th row: 5 rects, width 60, 65, 70, 75, 80px
+3rd row: 3 rects, width:140 120 160

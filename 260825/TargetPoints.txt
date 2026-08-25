@@ -1,0 +1,10 @@
+Intensity 30mW
+1) 0mMol TEMPO: 
+	40%DoC at 1.5s
+	90%DoC at 3.5s
+2) 5mMol TEMPO: 
+	40%DoC at 5.5s
+	90%DoC at 8.0s
+
+
+Intensity: (Simulatino First):

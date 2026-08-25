@@ -16,7 +16,7 @@ imagesO=[]
 imagesT=[]
 
 #folder_name = 'test_repro'
-folder_name ='260819\\30mW_0mMol\\260819_30mW_0mMol_Sync_line_1.5s_Opt'
+folder_name ='260825\\30mW_0mMol\\260825_30mW_0mMol_Sync_line_3.5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
 os.makedirs(save_path, exist_ok=True)
@@ -28,7 +28,7 @@ print('Working Device:',device)
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
     firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
     intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
-    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.40 * target),'fro')
+    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.90 * target),'fro')
     #FinalLoss=F.mse_loss(finalDoC, target)
     return finalLoss#+intermediateLoss
     #return firstLoss + intermediateLoss + finalLoss
@@ -148,10 +148,10 @@ chainGrowth_noise_std=0.0 #relative std of quenched per-pixel randomness in loca
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(3/dt)
+total_steps=int(4/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
-tstepT1 = int(3.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(1.5 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
+tstepT2 = int(3.5 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=27.7117
@@ -196,6 +196,7 @@ opt_mask=torch.nn.Parameter(mask.clone()) #shape(H,W)
 
 grayscale_floor=15.0  #Zak needs it
 # min opt_mask value enforced inside the cure zone, so cured pixels never rely 100% on scatter
+#How will if affect? PENDING
 cure_zone=mask>grayscale_floor # define a target fre ground.
 
 #Swiss O2diff convo
