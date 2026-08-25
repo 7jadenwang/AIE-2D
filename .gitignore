@@ -31,3 +31,12 @@
 /__pycache__
 /test_repro
 /.DS_Store
+
+# generated simulation/optimization output images (AIE_TEMPOv1.1.py), any run folder
+**/aaa_*.png
+**/DoC_*.png
+**/O2_*.png
+**/TEMPO_*.png
+**/allDoC.gif
+**/allO2.gif
+**/allTEMPO.gif
