@@ -17,10 +17,12 @@ import numpy as np
 
 
 REPOSITORY_DIR = Path(__file__).resolve().parent
-DEFAULT_REFERENCE_PATH = REPOSITORY_DIR / "doc_reference_curves.json"
+DEFAULT_REFERENCE_PATH = REPOSITORY_DIR / "doc_reference_catalog.json"
 DEFAULT_REFERENCE_ID = "30mW_0mM"
-DOC_REFERENCE_SCHEMA_VERSION = 2
-PRODUCTION_REFERENCE_METHOD = "equal_replicate_isotonic_linear_interp_v1"
+DOC_REFERENCE_SCHEMA_VERSION = 3
+PRODUCTION_REFERENCE_METHOD = "collaborator_original_componentwise_mean_abc_v1"
+PRODUCTION_MODEL_ID = "collaborator_original_abc"
+PRODUCTION_FORMULA = "1 - a * exp(minimum(b * (c - t), 0))"
 EXPECTED_CONDITIONS = {
     "30mW_0mM": {"intensity_mw_cm2": 30.0, "tempo_concentration_mM": 0.0},
     "30mW_5mM": {"intensity_mw_cm2": 30.0, "tempo_concentration_mM": 5.0},
@@ -58,8 +60,11 @@ class DoCReferenceCurve:
         return float(self.doc_reference[-1])
 
     @property
-    def saturation_time_s(self) -> float:
-        return float(self.metadata["saturation_times_s"]["production"])
+    def saturation_time_s(self) -> float | None:
+        """Return a declared saturation time when an artifact defines one."""
+
+        value = self.metadata.get("saturation_time_s")
+        return None if value is None else float(value)
 
     def at(
         self, process_time_s: float | Sequence[float] | np.ndarray
@@ -122,16 +127,11 @@ class DoCReferenceCurve:
             "production_reference_method": self.metadata[
                 "production_reference_method"
             ],
-            "equal_replicate_construction": self.metadata[
-                "equal_replicate_construction"
-            ],
-            "isotonic_regression": self.metadata["isotonic_regression"],
+            "fitting_routine": self.metadata["fitting_routine"],
             "runtime_grid_interpolation_method": self.metadata[
                 "runtime_grid_interpolation_method"
             ],
-            "compact_diagnostic_fit": self.metadata["compact_diagnostic_fit"],
-            "saturation_detection_rule": self.metadata["saturation_detection_rule"],
-            "saturation_times_s": self.metadata["saturation_times_s"],
+            "historical_diagnostics": self.metadata["historical_diagnostics"],
             "threshold_times_s": self.metadata["threshold_times_s"],
             "reference_time_range_s": [self.start_time_s, self.end_time_s],
             "final_doc": self.final_doc,
@@ -177,7 +177,7 @@ def available_doc_reference_ids(
         )
     references = document.get("references")
     if not isinstance(references, dict):
-        raise DoCReferenceError("schema-v2 artifact must contain a references object")
+        raise DoCReferenceError("schema-v3 artifact must contain a references object")
     return tuple(sorted(references))
 
 
@@ -232,19 +232,16 @@ def _validate_reference(
         "legacy_label_notes",
         "production_reference_method",
         "selected_fit_model",
+        "selected_fit_formula",
         "selected_fit_parameters",
         "fit_metrics",
         "model_comparison",
         "replicate_fits",
-        "saturation_detection_rule",
-        "saturation_times_s",
         "production_reference_construction_method",
-        "equal_replicate_construction",
-        "isotonic_regression",
+        "fitting_routine",
+        "historical_diagnostics",
         "runtime_grid_interpolation_method",
         "threshold_times_s",
-        "production_threshold_comparison_s",
-        "compact_diagnostic_fit",
         "reference_time_range_s",
         "dt_s",
         "time_s",
@@ -285,27 +282,28 @@ def _validate_reference(
             "production_reference_method must be "
             f"{PRODUCTION_REFERENCE_METHOD!r}"
         )
-    if reference["selected_fit_model"] != "isotonic_monotonic_benchmark":
+    if reference["selected_fit_model"] != PRODUCTION_MODEL_ID:
         raise DoCReferenceError(
-            "production selected_fit_model must be isotonic_monotonic_benchmark"
+            f"production selected_fit_model must be {PRODUCTION_MODEL_ID!r}"
         )
+    if reference.get("selected_fit_formula") != PRODUCTION_FORMULA:
+        raise DoCReferenceError("production fit formula is not collaborator-original")
     if reference["runtime_grid_interpolation_method"] != "piecewise_linear":
         raise DoCReferenceError("runtime grid interpolation must be piecewise_linear")
-    construction = reference["equal_replicate_construction"]
-    if not isinstance(construction, dict) or construction.get(
-        "replicate_weights"
-    ) != {"T1": 0.5, "T2": 0.5}:
-        raise DoCReferenceError("production reference must weight T1/T2 equally")
-    isotonic = reference["isotonic_regression"]
-    if (
-        not isinstance(isotonic, dict)
-        or isotonic.get("increasing") is not True
-        or isotonic.get("lower_bound") != 0.0
-        or isotonic.get("upper_bound") != 1.0
-        or not isinstance(isotonic.get("block_count"), int)
-        or isotonic["block_count"] < 1
+    parameters = reference["selected_fit_parameters"]
+    if set(parameters) != {"a", "b", "c"}:
+        raise DoCReferenceError("collaborator production parameters must be a, b, c")
+    parameters = {
+        name: _finite_float(value, f"selected_fit_parameters.{name}")
+        for name, value in parameters.items()
+    }
+    fitting = reference["fitting_routine"]
+    if not isinstance(fitting, dict) or fitting.get("call") != (
+        "curve_fit(fitting_func, time, signal)"
     ):
-        raise DoCReferenceError("isotonic production metadata is invalid")
+        raise DoCReferenceError("collaborator curve_fit call provenance is invalid")
+    if any(fitting.get(name) is not None for name in ("initial_guess", "bounds", "weights")):
+        raise DoCReferenceError("collaborator fit must not add p0, bounds, or weights")
     model_comparison = reference["model_comparison"]
     if not isinstance(model_comparison, dict):
         raise DoCReferenceError("model_comparison must be an object")
@@ -314,20 +312,11 @@ def _validate_reference(
         for model_id, model in model_comparison.items()
         if isinstance(model, dict) and model.get("selected") is True
     ]
-    if selected_models != ["isotonic_monotonic_benchmark"]:
-        raise DoCReferenceError("model comparison must select only isotonic production")
-    compact = reference["compact_diagnostic_fit"]
-    if (
-        not isinstance(compact, dict)
-        or compact.get("model_id") != "delayed_avrami_fixed_plateau"
-        or compact.get("role") != "diagnostic_only_not_MPC_reference"
-    ):
-        raise DoCReferenceError("compact Avrami fit must be diagnostic only")
-    rule = reference["saturation_detection_rule"]
-    if not isinstance(rule, dict) or not all(
-        key in rule for key in ("rule_id", "normalized_threshold", "consecutive_samples", "description")
-    ):
-        raise DoCReferenceError("saturation detection provenance is incomplete")
+    if selected_models != [PRODUCTION_MODEL_ID]:
+        raise DoCReferenceError("model comparison must select only collaborator production")
+    historical = reference["historical_diagnostics"]
+    if not isinstance(historical, dict) or historical.get("production_status") != "none":
+        raise DoCReferenceError("custom historical models must have no production status")
 
     try:
         time_s = np.asarray(reference["time_s"], dtype=float)
@@ -356,18 +345,13 @@ def _validate_reference(
     dt_s = _finite_float(reference["dt_s"], "reference dt_s")
     if not np.allclose(np.diff(time_s), dt_s, rtol=0.0, atol=1e-10):
         raise DoCReferenceError("reference time grid is inconsistent with declared dt_s")
-    saturation = _finite_float(
-        reference["saturation_times_s"].get("production"), "production saturation"
+    expected_curve = 1.0 - parameters["a"] * np.exp(
+        np.minimum(parameters["b"] * (parameters["c"] - time_s), 0.0)
     )
-    if not 0.0 <= saturation <= 20.0:
-        raise DoCReferenceError("production saturation time must lie in [0,20]")
-    plateau = time_s >= saturation - 1e-12
-    if not np.any(plateau) or not np.all(doc_reference[plateau] == 1.0):
+    if not np.allclose(doc_reference, expected_curve, rtol=0.0, atol=1e-12):
         raise DoCReferenceError(
-            "doc_reference must remain exactly 1.0 at and after production saturation"
+            "doc_reference is not the collaborator-original averaged a/b/c curve"
         )
-    if doc_reference[-1] != 1.0:
-        raise DoCReferenceError("20 s reference value must be exactly 1.0")
     if reference["source_data_sha256"] != document["source_data_sha256"]:
         raise DoCReferenceError("reference/source artifact workbook hashes disagree")
 
@@ -392,7 +376,7 @@ def load_doc_reference(
     reference_id: str = DEFAULT_REFERENCE_ID,
     path: Path | str = DEFAULT_REFERENCE_PATH,
 ) -> DoCReferenceCurve:
-    """Load and validate a named experimental reference from schema v2."""
+    """Load and validate a named experimental reference from schema v3."""
 
     if not isinstance(reference_id, str) or not reference_id:
         raise DoCReferenceError("reference_id must be a nonempty string")
@@ -400,3 +384,24 @@ def load_doc_reference(
     return _validate_reference(
         document, reference_id, source_path, hashlib.sha256(raw).hexdigest()
     )
+
+
+# Public compatibility API.  The focused implementation supports both the
+# preserved schema-v2 artifact and the validated schema-v3 model catalog.
+from doc_reference_catalog import (  # noqa: E402,F401
+    COLLABORATOR_FORMULA,
+    CURRENT_SCHEMA_VERSION,
+    CURVE_MODEL_IDS,
+    DEFAULT_CURVE_MODEL,
+    DEFAULT_REFERENCE_ID,
+    DEFAULT_REFERENCE_PATH,
+    LEGACY_REFERENCE_PATH,
+    SUPPORTED_SCHEMA_VERSIONS,
+    DoCReference,
+    DoCReferenceCurve,
+    DoCReferenceError,
+    available_curve_models,
+    available_doc_reference_ids,
+    load_doc_reference,
+    migrate_v2_to_v3,
+)

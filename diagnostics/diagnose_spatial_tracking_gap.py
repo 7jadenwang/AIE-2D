@@ -34,7 +34,7 @@ import torch
 
 from aie_model import DOC_HISTORY_DESCRIPTION, DOC_HISTORY_MODE, AIEModel, AIEParameters
 from aie_reference import load_reference_config_for_condition
-from doc_reference import DoCReferenceCurve, load_doc_reference
+from doc_reference import LEGACY_REFERENCE_PATH, DoCReferenceCurve, load_doc_reference
 from run_mpc import (
     assess_reference_physics_match,
     load_normalized_target,
@@ -920,7 +920,7 @@ def _plot_region_tracking(
     interior_colors = {1: "#9ecae1", 2: "#4292c6", 4: "#08519c"}
     boundary_colors = {1: "#fcbba1", 2: "#ef3b2c", 4: "#99000d"}
     for axis, (title, result) in zip(axes, trajectories, strict=True):
-        axis.plot(result.time_s, reference, color="black", linewidth=2.7, label="isotonic reference")
+        axis.plot(result.time_s, reference, color="black", linewidth=2.7, label="legacy isotonic reference")
         axis.plot(result.time_s, result.region_doc["full_target"], color="#6a3d9a", linewidth=2.2, label="full target")
         for depth in EROSION_DEPTHS:
             axis.plot(
@@ -1223,7 +1223,7 @@ def _plot_control_feasibility(
     control_times = np.asarray(analysis["control_times_s"], dtype=float)
     controls = np.asarray(analysis["target_region_mean_control"], dtype=float)
     fig, axes = plt.subplots(2, 1, figsize=(10.0, 7.6), sharex=True)
-    axes[0].plot(time_s, reference, color="black", linewidth=2.6, label="isotonic reference")
+    axes[0].plot(time_s, reference, color="black", linewidth=2.6, label="legacy isotonic reference")
     axes[0].plot(time_s, full_power_doc, color="#d62728", linewidth=2.0, label="full-power L-shape")
     axes[0].plot(time_s, mpc_doc, color="#2ca02c", linewidth=1.8, label="MPC replay target DoC")
     infeasible = full_power_doc < reference
@@ -1420,7 +1420,9 @@ def main() -> None:
 
     for reference_id in CONDITION_IDS:
         print(f"\n=== {reference_id} ===")
-        curve = load_doc_reference(reference_id)
+        curve = load_doc_reference(
+            reference_id, LEGACY_REFERENCE_PATH, curve_model="isotonic"
+        )
         config = load_reference_config_for_condition(reference_id)
         params = AIEParameters.from_reference(config)
         physics_match = assess_reference_physics_match(curve, params)

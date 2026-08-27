@@ -1,0 +1,2 @@
+time_s,requested_target_doc,mean_target_doc,min_target_doc,max_target_doc,std_target_doc,lower_error,upper_error,mean_error
+3.5,0.4,0.6269053220748901,0.0,0.82013338804245,0.16794005036354065,0.6269053220748901,0.19322806596755981,0.22690532207489011

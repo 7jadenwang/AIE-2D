@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
 import torch
 
 from aie_fine_grid import initialize_projector_mask
 from aie_model import AIEModel, AIEState
 from doc_reference import DoCReferenceCurve
+from tracking_config import TrackingSpecification
 
 
 class DifferentiableMPC:
@@ -26,7 +29,10 @@ class DifferentiableMPC:
         *,
         model: AIEModel,
         target: torch.Tensor,
-        reference_curve: DoCReferenceCurve,
+        reference_curve: DoCReferenceCurve | None = None,
+        tracking_mode: str = "curve",
+        checkpoints: Sequence[tuple[float, float]] | None = None,
+        tracking_specification: TrackingSpecification | None = None,
         horizon: int = 4,
         physics_steps_per_control: int = 10,
         target_threshold: float = 0.5,
@@ -53,6 +59,25 @@ class DifferentiableMPC:
         if not 0 <= target_threshold <= 1:
             raise ValueError(
                 f"target_threshold must be in [0, 1], got {target_threshold}"
+            )
+        if tracking_specification is None:
+            if tracking_mode == "curve":
+                if reference_curve is None:
+                    raise ValueError("curve tracking requires reference_curve")
+                if checkpoints:
+                    raise ValueError("curve tracking cannot also define checkpoints")
+                tracking_specification = TrackingSpecification.curve(reference_curve)
+            elif tracking_mode == "checkpoints":
+                if reference_curve is not None:
+                    raise ValueError("checkpoint tracking must not mix a fitted curve")
+                tracking_specification = TrackingSpecification.checkpoints(checkpoints or ())
+            else:
+                raise ValueError(
+                    "sampled-curve tracking requires an explicit TrackingSpecification"
+                )
+        elif reference_curve is not None or checkpoints:
+            raise ValueError(
+                "tracking_specification cannot be combined with legacy reference_curve/checkpoints arguments"
             )
         weights = {
             "target_weight": target_weight,
@@ -81,7 +106,12 @@ class DifferentiableMPC:
 
         self.model = model
         self.target = target
-        self.reference_curve = reference_curve
+        self.tracking_specification = tracking_specification
+        self.reference_curve = tracking_specification.reference_curve
+        self.tracking_mode = tracking_specification.tracking_mode
+        self.checkpoints = tuple(
+            zip(tracking_specification.point_times_s, tracking_specification.point_values)
+        )
         self.target_region = target_region
         self.outside_region = 1.0 - target_region
         self.horizon = horizon
@@ -196,13 +226,16 @@ class DifferentiableMPC:
                 name: float(value) for name, value in final_components.items()
             },
             "optimized_control_sequence": result,
-            "stage_times_s": self.reference_curve.stage_times(
-                current_process_time_s, self.control_dt_s, self.horizon
-            ).tolist(),
-            "stage_reference_doc": self.reference_curve.stage_values(
-                current_process_time_s, self.control_dt_s, self.horizon
-            ).tolist(),
+            "stage_times_s": self.stage_times(current_process_time_s).tolist(),
         }
+        stage_values, stage_active = self.stage_tracking_values(current_process_time_s)
+        stage_weights = self.stage_tracking_weights(current_process_time_s)
+        info["stage_reference_doc"] = [
+            float(value) if bool(active) else None
+            for value, active in zip(stage_values.cpu(), stage_active.cpu())
+        ]
+        info["stage_tracking_active"] = stage_active.cpu().tolist()
+        info["stage_tracking_weights"] = stage_weights.cpu().tolist()
         return result, info
 
     @property
@@ -232,14 +265,38 @@ class DifferentiableMPC:
         return tuple(stages)
 
     def stage_reference_values(self, current_process_time_s: float) -> torch.Tensor:
-        """Return scalar DoC references at absolute future stage times."""
+        """Return scalar target values; inactive checkpoint stages contain zero."""
 
+        values, _ = self.stage_tracking_values(current_process_time_s)
+        return values
+
+    def stage_times(self, current_process_time_s: float) -> np.ndarray:
+        """Return absolute future control-boundary times for the horizon."""
+
+        if not math.isfinite(current_process_time_s) or current_process_time_s < 0:
+            raise ValueError("current process time must be finite and nonnegative")
+        return current_process_time_s + self.control_dt_s * np.arange(
+            1, self.horizon + 1, dtype=float
+        )
+
+    def stage_tracking_values(
+        self, current_process_time_s: float
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return stage values and a mask selecting target-tracking stages."""
+        schedule = self.tracking_specification.stage_schedule(
+            current_process_time_s, self.control_dt_s, self.horizon
+        )
+        return (
+            torch.as_tensor(schedule.required_doc, device=self.model.device, dtype=self.model.dtype),
+            torch.as_tensor(schedule.active, device=self.model.device, dtype=torch.bool),
+        )
+
+    def stage_tracking_weights(self, current_process_time_s: float) -> torch.Tensor:
+        schedule = self.tracking_specification.stage_schedule(
+            current_process_time_s, self.control_dt_s, self.horizon
+        )
         return torch.as_tensor(
-            self.reference_curve.stage_values(
-                current_process_time_s, self.control_dt_s, self.horizon
-            ),
-            device=self.model.device,
-            dtype=self.model.dtype,
+            schedule.point_weights, device=self.model.device, dtype=self.model.dtype
         )
 
     def desired_doc_stages(self, current_process_time_s: float) -> torch.Tensor:
@@ -277,20 +334,43 @@ class DifferentiableMPC:
             )
 
         desired_doc_stages = self.desired_doc_stages(current_process_time_s)
+        stage_reference, target_tracking_active = self.stage_tracking_values(
+            current_process_time_s
+        )
+        stage_tracking_weights = self.stage_tracking_weights(current_process_time_s)
         target_stage_costs: list[torch.Tensor] = []
+        active_weights: list[torch.Tensor] = []
         outside_stage_costs: list[torch.Tensor] = []
-        for predicted_state, desired_doc in zip(predicted_states, desired_doc_stages):
-            target_stage_costs.append(
-                self._masked_mean(
-                    (predicted_state.doc - desired_doc).square(), self.target_region
+        for stage_index, (predicted_state, desired_doc) in enumerate(
+            zip(predicted_states, desired_doc_stages)
+        ):
+            if bool(target_tracking_active[stage_index]):
+                if self.tracking_specification.spatial_definition == "pixelwise":
+                    error = predicted_state.doc - desired_doc
+                    stage_cost = self._masked_mean(
+                        self._tracking_loss(error), self.target_region
+                    )
+                else:
+                    target_mean = self._masked_mean(
+                        predicted_state.doc, self.target_region
+                    )
+                    error = target_mean - stage_reference[stage_index]
+                    stage_cost = self._tracking_loss(error)
+                target_stage_costs.append(
+                    stage_tracking_weights[stage_index] * stage_cost
                 )
-            )
+                active_weights.append(stage_tracking_weights[stage_index])
             outside_stage_costs.append(
                 self._masked_mean(
                     predicted_state.doc.square(), self.outside_region
                 )
             )
-        target_cost = torch.stack(target_stage_costs).mean()
+        target_cost = (
+            torch.stack(target_stage_costs).sum()
+            / torch.stack(active_weights).sum().clamp_min(1e-12)
+            if target_stage_costs
+            else predicted_states[0].doc.sum() * 0.0
+        )
         outside_cost = torch.stack(outside_stage_costs).mean()
         energy_cost = controls.square().mean()
         if self.horizon > 1:
@@ -309,6 +389,21 @@ class DifferentiableMPC:
             "energy": energy_cost,
             "smoothness": smoothness_cost,
         }
+
+    def _tracking_loss(self, error: torch.Tensor) -> torch.Tensor:
+        """Apply the configured pointwise target loss without changing penalties."""
+
+        if self.tracking_specification.tracking_loss == "mse":
+            return error.square()
+        if self.tracking_specification.tracking_loss == "mae":
+            return error.abs()
+        delta = self.tracking_specification.huber_delta
+        absolute = error.abs()
+        return torch.where(
+            absolute <= delta,
+            0.5 * error.square(),
+            delta * (absolute - 0.5 * delta),
+        )
 
     def shift_warm_start(self, optimized_controls: torch.Tensor) -> torch.Tensor:
         """Shift ``[u0, u1, ..., uN]`` to ``[u1, ..., uN, uN]``."""

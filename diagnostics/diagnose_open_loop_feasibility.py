@@ -38,7 +38,7 @@ import torch
 
 from aie_model import DOC_HISTORY_DESCRIPTION, DOC_HISTORY_MODE, AIEModel, AIEParameters
 from aie_reference import load_reference_config_for_condition
-from doc_reference import DoCReferenceCurve, load_doc_reference
+from doc_reference import LEGACY_REFERENCE_PATH, DoCReferenceCurve, load_doc_reference
 from run_mpc import (
     assess_reference_physics_match,
     load_normalized_target,
@@ -774,7 +774,7 @@ def _save_condition_plot(
         gridspec_kw={"height_ratios": [2.1, 1.0]},
     )
     ax, deficit_ax = axes
-    ax.plot(target.time_s, reference, color="black", linewidth=2.8, label="isotonic experimental reference")
+    ax.plot(target.time_s, reference, color="black", linewidth=2.8, label="legacy isotonic experimental reference")
     ax.plot(uniform.time_s, uniform.doc_mean, color="#1f77b4", linewidth=2.0, label="uniform full-field, u=1")
     ax.plot(target.time_s, target.doc_mean, color="#d62728", linewidth=2.0, label="L-shape full-power")
     if mpc is not None:
@@ -1007,7 +1007,9 @@ def main() -> None:
 
     for reference_id in CONDITION_IDS:
         print(f"\nLoading matched condition {reference_id}")
-        curve: DoCReferenceCurve = load_doc_reference(reference_id)
+        curve: DoCReferenceCurve = load_doc_reference(
+            reference_id, LEGACY_REFERENCE_PATH, curve_model="isotonic"
+        )
         config = load_reference_config_for_condition(reference_id)
         params = AIEParameters.from_reference(config)
         physics_match = assess_reference_physics_match(curve, params)

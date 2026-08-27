@@ -26,7 +26,20 @@ DOC_FIT_PATH = REPOSITORY_DIR / "doc_fit_parameters.json"
 DOC_FIT_SCHEMA_VERSION = 1
 CONTROLLER_NATIVE_SHAPE = (300, 300)
 SUPPORTED_MODEL_STRUCTURE_VERSION = 2
-SUPPORTED_FORWARD_CONDITIONS = ("30mW_0mM", "30mW_5mM")
+SUPPORTED_FORWARD_CONDITIONS = ("active", "30mW_0mM", "30mW_5mM", "70mW_0mM")
+
+_ACTIVE_PHYSICS_VALUE_SOURCES = (
+    ("intensity", "active assignment"),
+    ("o2_inhibition", "active assignment"),
+    ("total_inhibition", "active assignment"),
+    ("tempo_inhibition", "derived from active assignments"),
+    ("b_law", "active expression"),
+    ("dt", "active assignment"),
+    ("pixel_pitch", "active assignment"),
+    ("o2_diffusivity", "active assignment"),
+    ("tempo_diffusivity", "active assignment"),
+    ("scattering", "active assignment"),
+)
 
 
 class ReferenceResolutionError(ValueError):
@@ -112,6 +125,11 @@ class ReferenceConfig:
     doc_fit_selection_status: str
     available_doc_fit_condition_ids: tuple[str, ...]
     doc_fit: DoCFitCalibration | None
+    physics_selector_id: str = "active"
+    physics_resolution_mode: str = "active_authoritative"
+    physics_value_sources: tuple[tuple[str, str], ...] = (
+        _ACTIVE_PHYSICS_VALUE_SOURCES
+    )
 
     @property
     def tempo_inhibition_mj_cm2(self) -> float:
@@ -124,6 +142,7 @@ class ReferenceConfig:
         metadata["available_doc_fit_condition_ids"] = list(
             self.available_doc_fit_condition_ids
         )
+        metadata["physics_value_sources"] = dict(self.physics_value_sources)
         return metadata
 
 
@@ -805,6 +824,12 @@ def load_reference_config() -> ReferenceConfig:
         ),
         None,
     )
+    if tempo_condition is None:
+        normalized_b_label = equations["b_condition_label"].lower().replace(" ", "")
+        if "0mmtempo" in normalized_b_label:
+            tempo_condition = 0.0
+        elif "5mmtempo" in normalized_b_label:
+            tempo_condition = 5.0
     calibration_sha, calibration_catalog = _load_doc_fit_catalog()
     doc_fit, selection_status = _select_doc_fit(
         calibration_catalog, intensity, tempo_condition
@@ -899,14 +924,55 @@ def _unique_commented_condition_value(
     return tuple(_finite_float(value, label) for value in values)
 
 
+def _unique_labeled_b_relation(source: str, tempo_mM: float) -> tuple[float, float]:
+    """Read one active-or-commented affine B(I) relation by TEMPO label."""
+
+    label = f"{tempo_mM:g} mM B/intensity relation"
+    matches = re.findall(
+        r"^\s*(?:#\s*)?B\s*=\s*([-+0-9.eE]+)\s*\*\s*\([^\r\n]+\)\s*"
+        r"\+\s*([-+0-9.eE]+)\s*#\s*"
+        + re.escape(f"{tempo_mM:g}")
+        + r"\s*mM\s*TEMPO\s*$",
+        source,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    if len(matches) != 1:
+        raise ReferenceResolutionError(
+            f"expected one authoritative {label}, found {len(matches)}"
+        )
+    slope, intercept = matches[0]
+    return _finite_float(slope, label), _finite_float(intercept, label)
+
+
+def _active_matches_condition(
+    active: ReferenceConfig, intensity_mw_cm2: float, tempo_mM: float
+) -> bool:
+    """Return whether a named selector exactly describes the executable state."""
+
+    return (
+        math.isclose(
+            active.intensity_mw_cm2,
+            intensity_mw_cm2,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+        and active.tempo_concentration_mM is not None
+        and math.isclose(
+            active.tempo_concentration_mM,
+            tempo_mM,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
+    )
+
+
 def load_reference_config_for_condition(reference_id: str) -> ReferenceConfig:
     """Resolve a validated condition configuration through the read-only adapter.
 
-    The active collaborator script is the 30 mW / 0 mM configuration.  Its source
-    also explicitly labels a 5 mM total-inhibition value and a 5 mM alternative
-    B/intensity relation.  This selector validates those comments on every load,
-    reuses the script's active generic TEMPO diffusivity, and never edits or
-    executes ``AIE_TEMPOv1.1.py``.
+    Executable assignments are authoritative whenever the named selector exactly
+    describes the active source.  Labelled historical alternatives are considered
+    only for non-active conditions; free-form comments never override matching
+    executable assignments.  The source is parsed but never edited or executed.
     """
 
     if reference_id not in SUPPORTED_FORWARD_CONDITIONS:
@@ -915,60 +981,107 @@ def load_reference_config_for_condition(reference_id: str) -> ReferenceConfig:
             f"{list(SUPPORTED_FORWARD_CONDITIONS)}"
         )
     base = load_reference_config()
-    if not math.isclose(
-        base.intensity_mw_cm2, 30.0, rel_tol=0.0, abs_tol=1e-12
-    ):
-        raise ReferenceResolutionError(
-            "condition selector requires authoritative intensity=30 mW/cm^2"
-        )
-
-    normalized_label = base.b_condition_label.lower().replace(" ", "")
-    if reference_id == "30mW_0mM":
-        if base.tempo_inhibition_mj_cm2 != 0.0 or "0mmtempo" not in normalized_label:
-            raise ReferenceResolutionError(
-                "active authoritative source is no longer the validated 0 mM "
-                "TEMPO configuration"
-            )
+    if reference_id == "active":
         return replace(
             base,
-            tempo_concentration_mM=0.0,
-            doc_fit_selection_status=(
-                "not_selected:legacy_doc_fit_parameters_not_used_for_runtime_tracking"
-            ),
+            physics_selector_id=reference_id,
+            physics_resolution_mode="active_authoritative",
+            physics_value_sources=_ACTIVE_PHYSICS_VALUE_SOURCES,
+        )
+    source = REFERENCE_MODEL_PATH.read_text(encoding="utf-8")
+    intensity_mw_cm2, tempo_mM = {
+        "30mW_0mM": (30.0, 0.0),
+        "30mW_5mM": (30.0, 5.0),
+        "70mW_0mM": (70.0, 0.0),
+    }[reference_id]
+
+    if _active_matches_condition(base, intensity_mw_cm2, tempo_mM):
+        return replace(
+            base,
+            physics_selector_id=reference_id,
+            physics_resolution_mode="active_authoritative",
+            physics_value_sources=_ACTIVE_PHYSICS_VALUE_SOURCES,
         )
 
-    source = REFERENCE_MODEL_PATH.read_text(encoding="utf-8")
-    (total_inhibition,) = _unique_commented_condition_value(
-        source,
-        r"^\s*#\s*([-+0-9.eE]+)\s+for\s+5\s*mmol\s+TEMPO\s+concentration\s*$",
-        "5 mM total inhibition",
-    )
-    b_slope, b_intercept = _unique_commented_condition_value(
-        source,
-        r"^\s*#\s*B\s*=\s*([-+0-9.eE]+)\s*\*\s*\([^\r\n]+\)\s*"
-        r"\+\s*([-+0-9.eE]+)\s*#\s*5\s*mM\s*TEMPO\s*$",
-        "5 mM B/intensity relation",
-    )
-    if total_inhibition <= base.o2_inhibition_mj_cm2:
-        raise ReferenceResolutionError(
-            "5 mM total inhibition must exceed the active O2 inhibition"
+    # The collaborator source has no structured, intensity-specific historical
+    # 70 mW configuration.  A generic inhibition comment cannot safely establish
+    # one, so this selector is valid only when 70 mW / 0 mM is the active state.
+    if reference_id == "70mW_0mM":
+        active_tempo = (
+            "unknown"
+            if base.tempo_concentration_mM is None
+            else f"{base.tempo_concentration_mM:g} mM"
         )
+        raise ReferenceResolutionError(
+            "70mW_0mM is not the active authoritative condition "
+            f"(active source: {base.intensity_mw_cm2:g} mW/cm^2, "
+            f"{active_tempo}); no unambiguous structured 70 mW alternative "
+            "exists, and free-form inhibition comments are not permitted to "
+            "override the active assignments"
+        )
+
+    b_slope, b_intercept = _unique_labeled_b_relation(source, tempo_mM)
     if b_slope <= 0.0 or b_intercept < 0.0:
         raise ReferenceResolutionError(
-            "5 mM B/intensity coefficients must be physically nonnegative"
+            f"{tempo_mM:g} mM B/intensity coefficients must be physically nonnegative"
         )
+
+    if math.isclose(tempo_mM, 0.0, rel_tol=0.0, abs_tol=1e-12):
+        (o2_inhibition,) = _unique_commented_condition_value(
+            source,
+            r"^\s*#\s*([-+0-9.eE]+)\s+for\s+0\s*mmol\s+TEMPO\s+"
+            r"concentration\s+O2\s+only\s*$",
+            "0 mM O2-only inhibition",
+        )
+        total_inhibition = o2_inhibition
+        field_sources = (
+            ("intensity", "explicit named non-active condition"),
+            ("o2_inhibition", "labelled historical 0 mM comment"),
+            ("total_inhibition", "reconstructed O2-only condition"),
+            ("tempo_inhibition", "derived from reconstructed condition"),
+            ("b_law", "labelled historical expression"),
+        )
+    else:
+        o2_inhibition = base.o2_inhibition_mj_cm2
+        (total_inhibition,) = _unique_commented_condition_value(
+            source,
+            r"^\s*#\s*([-+0-9.eE]+)\s+for\s+5\s*mmol\s+TEMPO\s+concentration\s*$",
+            "5 mM total inhibition",
+        )
+        if total_inhibition <= o2_inhibition:
+            raise ReferenceResolutionError(
+                "5 mM total inhibition must exceed the active O2 inhibition"
+            )
+        field_sources = (
+            ("intensity", "explicit named non-active condition"),
+            ("o2_inhibition", "active assignment"),
+            ("total_inhibition", "labelled historical 5 mM comment"),
+            ("tempo_inhibition", "derived from reconstructed condition"),
+            ("b_law", "labelled historical expression"),
+        )
+
+    _, calibration_catalog = _load_doc_fit_catalog()
+    doc_fit, selection_status = _select_doc_fit(
+        calibration_catalog, intensity_mw_cm2, tempo_mM
+    )
     return replace(
         base,
-        tempo_concentration_mM=5.0,
+        intensity_mw_cm2=intensity_mw_cm2,
+        tempo_concentration_mM=tempo_mM,
+        o2_inhibition_mj_cm2=o2_inhibition,
         total_inhibition_mj_cm2=total_inhibition,
         b_slope=b_slope,
         b_intercept=b_intercept,
         b_condition_label=(
-            "5mMTEMPO (validated commented alternative in AIE_TEMPOv1.1.py)"
+            f"{tempo_mM:g}mMTEMPO (validated labelled relation in "
+            "AIE_TEMPOv1.1.py)"
         ),
-        doc_fit_selection_status=(
-            "not_selected:legacy_doc_fit_parameters_not_used_for_runtime_tracking"
-        ),
+        division_epsilon=base.minimum_normalized_intensity * intensity_mw_cm2,
+        doc_fit_selection_status=selection_status,
+        doc_fit=doc_fit,
+        physics_selector_id=reference_id,
+        physics_resolution_mode="reconstructed_labelled_alternative",
+        physics_value_sources=field_sources,
     )
 
 

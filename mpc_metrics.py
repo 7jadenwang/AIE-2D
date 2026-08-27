@@ -192,6 +192,9 @@ def component_metrics(
     if not rows:
         return {
             "count": 0,
+            "component_mean_doc_mean": None,
+            "component_mean_doc_min": None,
+            "component_mean_doc_max": None,
             "worst_mean_doc": None,
             "worst_mean_doc_component_id": None,
             "worst_cured_fraction": None,
@@ -202,8 +205,14 @@ def component_metrics(
     worst_mean = min(rows, key=lambda row: row["mean_final_doc"])
     worst_cured = min(rows, key=lambda row: row["cured_fraction"])
     worst_undercure = max(rows, key=lambda row: row["undercure_fraction"])
+    component_mean_docs = np.asarray(
+        [row["mean_final_doc"] for row in rows], dtype=float
+    )
     return {
         "count": count,
+        "component_mean_doc_mean": float(np.mean(component_mean_docs)),
+        "component_mean_doc_min": float(np.min(component_mean_docs)),
+        "component_mean_doc_max": float(np.max(component_mean_docs)),
         "worst_mean_doc": worst_mean["mean_final_doc"],
         "worst_mean_doc_component_id": worst_mean["component_id"],
         "worst_cured_fraction": worst_cured["cured_fraction"],

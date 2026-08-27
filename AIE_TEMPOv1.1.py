@@ -142,7 +142,7 @@ TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 # PROBLEM: CANNOT be too small to create Gaussian kernel? 
 # What if it is smaller than 1 pixel?
 
-intensity=120 #mW/cm2
+intensity=70 #mW/cm2
 #Change intensity with different data pls
 chainGrowth_noise_std=0.0 #relative std of quenched per-pixel randomness in local cure rate B
 
@@ -158,7 +158,7 @@ O2inhibition=27.7117
 # 0 for no O2 inhibition
 #10.452 for 0mmol TEMPO concentration O2 only
 #Total_inhibition_time=4.239 # from experimental data
-Totalinhibtion=119.7295
+Totalinhibtion=0
 #0 for no TEMPO inhibition
 #51.7456 for 1mmol TEMPO concentration
 #119.7295 for 5mmol TEMPO concentration
@@ -271,10 +271,10 @@ for epoch in range(numEpochs):
     Dose=[torch.zeros((H,W)).to(torch.float32).to(device)]
     DoC=[torch.zeros((H,W)).to(torch.float32).to(device)]
 
-    #A = -0.0231*(blur_mask.clamp(min=1e-12)/255 * intensity) + 2.044
-    #B = 0.0133*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4638 #0mMTEMPO
-    #B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO
-    B =0.0069*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3815 #5mMTEMPO
+    # A = -0.0231*(blur_mask.clamp(min=1e-12)/255 * intensity) + 2.044
+    B = 0.0133*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4638 #0mMTEMPO
+    # B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO
+    # B =0.0069*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3815 #5mMTEMPO
     if chainGrowth_noise_std > 0:
         B_noise=(1 + chainGrowth_noise_std * torch.randn(H, W, device=device)).clamp(min=1e-3)
         B = B * B_noise

@@ -1,9 +1,12 @@
-"""Saturation-aware fitting/export for experimental MPC DoC references.
+"""Collaborator-original fitting/export for experimental MPC DoC references.
 
 The experimental curves are desired control trajectories only.  They never
 replace the authoritative AIE forward dynamics or its reaction-progress state.
-Raw workbook labels are retained verbatim for provenance.  The workbook's
-``5mM`` labels are the scientifically correct 30 mW/cm^2, 5 mM condition.
+Raw workbook labels are retained verbatim for provenance.  The collaborator's
+original a/b/c expression, SciPy fitting call, per-trace max normalization, and
+componentwise T1/T2 coefficient average are authoritative for production.
+Isotonic, Avrami, Gompertz, and Richards code is retained for historical
+diagnostics only.
 """
 
 from __future__ import annotations
@@ -24,18 +27,27 @@ from scipy.optimize import curve_fit, isotonic_regression
 SOURCE_NOTEBOOK = "DoC curve.ipynb"
 SOURCE_DATA_FILE = "260728_circles/data_exports/intensity_data_processed.xlsx"
 SOURCE_SHEET = "30mW"
-REFERENCE_SCHEMA_VERSION = 2
-REFERENCE_ARTIFACT_ID = "doc_reference_curves_30mW_v2"
+REFERENCE_SCHEMA_VERSION = 3
+REFERENCE_ARTIFACT_ID = "doc_reference_curves_collaborator_original_v3"
+REFERENCE_ARTIFACT_FILE = "doc_reference_catalog.json"
 REFERENCE_DT_S = 0.05
 REFERENCE_END_S = 20.0
 ISOTONIC_COMMON_DT_S = 0.01
 SATURATION_THRESHOLD = 0.98
 SATURATION_CONSECUTIVE_SAMPLES = 4
 SATURATION_RULE_ID = "sustained_near_unity_v1"
-PRODUCTION_REFERENCE_METHOD = "equal_replicate_isotonic_linear_interp_v1"
-PRODUCTION_MODEL_ID = "isotonic_monotonic_benchmark"
+PRODUCTION_REFERENCE_METHOD = "collaborator_original_componentwise_mean_abc_v1"
+PRODUCTION_MODEL_ID = "collaborator_original_abc"
 COMPACT_DIAGNOSTIC_MODEL_ID = "delayed_avrami_fixed_plateau"
 PRODUCTION_INTERPOLATION_METHOD = "piecewise_linear"
+COLLABORATOR_FORMULA = "1 - a * exp(minimum(b * (c - t), 0))"
+MODEL_FORMULAS = {
+    "collaborator_original": COLLABORATOR_FORMULA,
+    "avrami": "y0 for t <= t0; y0 + (1-y0)*(1-exp(-((t-t0)/tau)^n)) otherwise",
+    "gompertz": "y0 + (1-y0)*exp(-exp(-(t-midpoint)/scale))",
+    "richards": "y0 + (1-y0)*(1+exp(-(t-midpoint)/scale))^(-1/nu)",
+    "isotonic": "equal-replicate increasing isotonic regression with piecewise-linear interpolation",
+}
 SATURATION_RULE = (
     "Normalize each finite CenterROI trace by its own raw maximum. Saturation is "
     "confirmed at the fourth sample in the first run of four consecutive samples "
@@ -175,24 +187,20 @@ def richards_fixed_plateau(
     return y0 + (1.0 - y0) * np.power(1.0 + np.exp(z), -1.0 / shape_nu)
 
 
-def old_delayed_exponential(
+def collaborator_original_abc(
     time_s: np.ndarray, a: float, b_per_s: float, c_s: float
 ) -> np.ndarray:
-    """Legacy notebook model, retained only for quantitative comparison."""
+    """Exact collaborator-original 30/40 mW fitting expression."""
 
     exponent = np.minimum(b_per_s * (c_s - np.asarray(time_s, dtype=float)), 0.0)
     return 1.0 - a * np.exp(exponent)
 
 
+# Historical API alias retained for notebooks/results created during model comparison.
+old_delayed_exponential = collaborator_original_abc
+
+
 MODEL_SPECS = (
-    ModelSpec(
-        "old_delayed_exponential",
-        ("a", "b_per_s", "c_s"),
-        old_delayed_exponential,
-        (0.0, 1e-4, 0.0),
-        (1.2, 10.0, 15.0),
-        (0.98, 0.7, 1.0),
-    ),
     ModelSpec(
         "delayed_avrami_fixed_plateau",
         ("y0", "t0_s", "tau_s", "shape_n"),
@@ -413,6 +421,137 @@ def fit_replicate(data: ReplicateData, spec: ModelSpec) -> dict[str, object]:
     }
 
 
+def fit_collaborator_original_replicate(data: ReplicateData) -> dict[str, object]:
+    """Apply the collaborator's exact unbounded SciPy fit to one full trace."""
+
+    time_s = data.time_s
+    observed = data.normalized_signal
+    parameters, covariance = curve_fit(collaborator_original_abc, time_s, observed)
+    predicted = collaborator_original_abc(time_s, *parameters)
+    dense_time = np.linspace(0.0, REFERENCE_END_S, 20_001)
+    fitted_thresholds = threshold_times_from_arrays(
+        dense_time, collaborator_original_abc(dense_time, *parameters)
+    )
+    raw_thresholds = threshold_times_from_arrays(time_s, observed)
+    threshold_errors = {
+        key: (
+            None
+            if raw_value is None or fitted_thresholds[key] is None
+            else float(fitted_thresholds[key] - raw_value)
+        )
+        for key, raw_value in raw_thresholds.items()
+    }
+    diagonal = np.diag(covariance)
+    return {
+        "parameters": {
+            "a": float(parameters[0]),
+            "b": float(parameters[1]),
+            "c": float(parameters[2]),
+        },
+        "parameter_vector": parameters,
+        "parameter_std_error": {
+            name: float(math.sqrt(max(value, 0.0)))
+            for name, value in zip(("a", "b", "c"), diagonal)
+        },
+        "metrics": _metrics(observed, predicted, len(parameters)),
+        "raw_threshold_times_s": raw_thresholds,
+        "fitted_threshold_times_s": fitted_thresholds,
+        "threshold_time_errors_s": threshold_errors,
+        "fit_sample_scope": "all_finite_samples",
+        "curve_fit_call": "curve_fit(collaborator_original_abc, time_s, normalized_signal)",
+    }
+
+
+def fit_collaborator_original_production(
+    replicates: dict[str, ReplicateData],
+) -> dict[str, object]:
+    """Fit T1/T2 separately and reproduce the collaborator's coefficient average."""
+
+    replicate_fits = {
+        label: fit_collaborator_original_replicate(data)
+        for label, data in replicates.items()
+    }
+    parameter_vectors = np.vstack(
+        [replicate_fits[label]["parameter_vector"] for label in ("T1", "T2")]
+    )
+    averaged = np.mean(parameter_vectors, axis=0)
+
+    def predict(query: np.ndarray) -> np.ndarray:
+        return collaborator_original_abc(np.asarray(query, dtype=float), *averaged)
+
+    per_replicate_metrics = []
+    for data in replicates.values():
+        per_replicate_metrics.append(
+            _metrics(data.normalized_signal, predict(data.time_s), len(averaged))
+        )
+    metrics = {
+        "sample_count": int(sum(item["sample_count"] for item in per_replicate_metrics)),
+        "parameter_count": 3,
+        "equal_replicate_rmse": math.sqrt(
+            float(np.mean([item["rmse"] ** 2 for item in per_replicate_metrics]))
+        ),
+        "equal_replicate_mae": float(
+            np.mean([item["mae"] for item in per_replicate_metrics])
+        ),
+        "rmse": math.sqrt(
+            float(np.mean([item["rmse"] ** 2 for item in per_replicate_metrics]))
+        ),
+        "mae": float(np.mean([item["mae"] for item in per_replicate_metrics])),
+        "r_squared": float(np.mean([item["r_squared"] for item in per_replicate_metrics])),
+    }
+    pooled_sse = metrics["rmse"] ** 2 * metrics["sample_count"]
+    safe_mse = max(pooled_sse / metrics["sample_count"], np.finfo(float).tiny)
+    metrics["aic"] = metrics["sample_count"] * math.log(safe_mse) + 2 * 3
+    metrics["bic"] = (
+        metrics["sample_count"] * math.log(safe_mse)
+        + 3 * math.log(metrics["sample_count"])
+    )
+    dense_time = np.linspace(0.0, REFERENCE_END_S, 20_001)
+    fitted_thresholds = threshold_times_from_arrays(dense_time, predict(dense_time))
+    central_raw = {}
+    for key in ("t10_s", "t30_s", "t50_s", "t90_s", "t95_s", "t99_s"):
+        values = [
+            replicate_fits[label]["raw_threshold_times_s"][key]
+            for label in ("T1", "T2")
+        ]
+        central_raw[key] = (
+            None if any(value is None for value in values) else float(np.mean(values))
+        )
+    threshold_errors = {
+        key: (
+            None
+            if raw_value is None or fitted_thresholds[key] is None
+            else float(fitted_thresholds[key] - raw_value)
+        )
+        for key, raw_value in central_raw.items()
+    }
+    metrics["central_threshold_time_mae_s"] = float(
+        np.mean([abs(value) for value in threshold_errors.values() if value is not None])
+    )
+    averaged_parameters = {
+        "a": float(averaged[0]),
+        "b": float(averaged[1]),
+        "c": float(averaged[2]),
+    }
+    return {
+        "model_id": PRODUCTION_MODEL_ID,
+        "model_type": "parametric",
+        "parameter_count": 3,
+        "replicate_fits": replicate_fits,
+        "joint_fit": {
+            "parameters": averaged_parameters,
+            "parameter_vector": averaged,
+            "parameter_std_error": {},
+            "metrics": metrics,
+            "raw_central_threshold_times_s": central_raw,
+            "fitted_threshold_times_s": fitted_thresholds,
+            "threshold_time_errors_s": threshold_errors,
+            "averaging_method": "componentwise_arithmetic_mean_of_replicate_coefficients",
+        },
+        "predict": predict,
+    }
+
+
 def _production_saturation_time(replicates: dict[str, ReplicateData]) -> float:
     mean_time = float(np.mean([data.saturation_time_s for data in replicates.values()]))
     return math.ceil(mean_time / REFERENCE_DT_S - 1e-12) * REFERENCE_DT_S
@@ -578,26 +717,29 @@ def _equal_replicate_isotonic(
 
 
 def _production_curve(
-    predict: Callable[[np.ndarray], np.ndarray], saturation_time_s: float
+    predict: Callable[[np.ndarray], np.ndarray]
 ) -> tuple[np.ndarray, np.ndarray]:
     time_s = np.round(
         np.arange(0.0, REFERENCE_END_S + 0.5 * REFERENCE_DT_S, REFERENCE_DT_S), 10
     )
     values = np.asarray(predict(time_s), dtype=float)
-    values = np.maximum.accumulate(np.clip(values, 0.0, 1.0))
-    values[time_s >= saturation_time_s - 1e-12] = 1.0
-    values = np.clip(values, 0.0, 1.0)
+    if not np.isfinite(values).all():
+        raise RuntimeError("collaborator production curve contains NaN or Inf")
+    if float(np.min(values)) < 0.0 or float(np.max(values)) > 1.0:
+        raise RuntimeError("collaborator production curve leaves [0,1]")
     return time_s, values
 
 
 def analyze_reference_condition(
     condition_id: str, repository_dir: Path | str = "."
 ) -> dict[str, object]:
-    """Fit diagnostic models and build the isotonic production reference."""
+    """Build the collaborator-original production fit plus historical diagnostics."""
 
     replicates = load_condition_replicates(condition_id, repository_dir)
     production_saturation = _production_saturation_time(replicates)
-    candidates: dict[str, dict[str, object]] = {}
+    candidates: dict[str, dict[str, object]] = {
+        PRODUCTION_MODEL_ID: fit_collaborator_original_production(replicates)
+    }
     for spec in MODEL_SPECS:
         replicate_fits = {
             label: fit_replicate(data, spec) for label, data in replicates.items()
@@ -622,32 +764,11 @@ def analyze_reference_condition(
                 "parameter_vector"
             ]: spec.function(query, *parameters),
         }
-    candidates[PRODUCTION_MODEL_ID] = _equal_replicate_isotonic(
+    candidates["isotonic_monotonic_benchmark"] = _equal_replicate_isotonic(
         replicates, production_saturation
     )
-
-    compact = candidates[COMPACT_DIAGNOSTIC_MODEL_ID]
-    old = candidates["old_delayed_exponential"]
-    compact_rmse = float(compact["joint_fit"]["metrics"]["rmse"])
-    old_rmse = float(old["joint_fit"]["metrics"]["rmse"])
-    if not compact_rmse <= 0.90 * old_rmse:
-        raise RuntimeError(
-            f"{condition_id}: diagnostic Avrami fit did not improve old RMSE by 10% "
-            f"({compact_rmse:.6g} vs {old_rmse:.6g})"
-        )
-    if compact["joint_fit"]["metrics"]["replicate_threshold_time_mae_s"] > 0.20:
-        raise RuntimeError(f"{condition_id}: Avrami diagnostic timing is unacceptable")
     production = candidates[PRODUCTION_MODEL_ID]
-    if production["metrics"]["central_threshold_time_mae_s"] > 0.20:
-        raise RuntimeError(f"{condition_id}: isotonic production timing is unacceptable")
-    time_s, doc_reference = _production_curve(
-        production["predict"],
-        production_saturation,
-    )
-    if np.any(np.diff(doc_reference) < -1e-12):
-        raise RuntimeError(f"{condition_id}: exported isotonic reference is nonmonotonic")
-    if float(np.min(doc_reference)) < 0.0 or float(np.max(doc_reference)) > 1.0:
-        raise RuntimeError(f"{condition_id}: exported isotonic reference left [0,1]")
+    time_s, doc_reference = _production_curve(production["predict"])
     return {
         "condition_id": condition_id,
         "condition_spec": CONDITION_SPECS[condition_id],
@@ -656,7 +777,7 @@ def analyze_reference_condition(
         "selected_model_id": PRODUCTION_MODEL_ID,
         "compact_diagnostic_model_id": COMPACT_DIAGNOSTIC_MODEL_ID,
         "production_reference_method": PRODUCTION_REFERENCE_METHOD,
-        "production_saturation_time_s": production_saturation,
+        "historical_saturation_time_s": production_saturation,
         "time_s": time_s,
         "doc_reference": doc_reference,
     }
@@ -700,7 +821,7 @@ def reference_comparison_table(analyses: dict[str, object]) -> pd.DataFrame:
     rows = []
     for condition_id, analysis in analyses.items():
         selected = analysis["candidates"][analysis["selected_model_id"]]
-        selected_metrics = selected["metrics"]
+        selected_metrics = selected["joint_fit"]["metrics"]
         thresholds = threshold_times_from_arrays(
             analysis["time_s"], analysis["doc_reference"]
         )
@@ -709,7 +830,7 @@ def reference_comparison_table(analyses: dict[str, object]) -> pd.DataFrame:
                 "reference_id": condition_id,
                 "production_method": analysis["production_reference_method"],
                 **thresholds,
-                "saturation_time_s": analysis["production_saturation_time_s"],
+                "saturation_time_s": None,
                 "rise_duration_t10_to_t90_s": thresholds["t90_s"]
                 - thresholds["t10_s"],
                 "fit_rmse": selected_metrics["rmse"],
@@ -762,36 +883,88 @@ def _candidate_export_record(
 def build_reference_export(
     analyses: dict[str, object], repository_dir: Path | str = "."
 ) -> dict[str, object]:
+    """Build the schema-v3 multi-model curve catalog.
+
+    The declared default is the exact collaborator-original model.  Custom
+    Codex-era models remain explicitly selectable historical diagnostics.
+    """
+
     repository_dir = Path(repository_dir)
     source_path = repository_dir / SOURCE_DATA_FILE
     source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
     references: dict[str, object] = {}
     for condition_id, analysis in analyses.items():
         condition = analysis["condition_spec"]
-        production = analysis["candidates"][analysis["selected_model_id"]]
-        compact = analysis["candidates"][analysis["compact_diagnostic_model_id"]]
-        compact_joint = compact["joint_fit"]
+        production = analysis["candidates"][PRODUCTION_MODEL_ID]
+        production_fit = production["joint_fit"]
+        runtime_time = np.asarray(analysis["time_s"], dtype=float)
+        isotonic = analysis["candidates"]["isotonic_monotonic_benchmark"]
+        isotonic_values = np.asarray(isotonic["predict"](runtime_time), dtype=float)
+        isotonic_values[
+            runtime_time >= float(analysis["historical_saturation_time_s"]) - 1e-12
+        ] = 1.0
+        curve_models = {
+            "collaborator_original": {
+                "model_id": "collaborator_original",
+                "source_model_id": PRODUCTION_MODEL_ID,
+                "role": "authoritative_production_default",
+                "representation": "parametric",
+                "formula": MODEL_FORMULAS["collaborator_original"],
+                "parameters": production_fit["parameters"],
+                "metrics": production_fit["metrics"],
+                "replicate_treatment": (
+                    "Fit independently max-normalized T1 and T2 using "
+                    "curve_fit(fitting_func, time, signal) without p0, bounds, "
+                    "or weights; take the componentwise arithmetic mean of a, b, c."
+                ),
+                "reference_time_range_s": [0.0, REFERENCE_END_S],
+                "dt_s": REFERENCE_DT_S,
+            },
+            "isotonic": {
+                "model_id": "isotonic",
+                "source_model_id": "isotonic_monotonic_benchmark",
+                "role": "historical_diagnostic",
+                "representation": "sampled_table",
+                "formula": MODEL_FORMULAS["isotonic"],
+                "metrics": isotonic["metrics"],
+                "replicate_treatment": REFERENCE_CONSTRUCTION,
+                "isotonic_block_count": isotonic["isotonic_block_count"],
+                "historical_saturation_time_s": analysis[
+                    "historical_saturation_time_s"
+                ],
+                "time_s": [float(value) for value in runtime_time],
+                "doc_reference": [float(value) for value in isotonic_values],
+            },
+        }
+        for public_id, source_id in {
+            "avrami": "delayed_avrami_fixed_plateau",
+            "gompertz": "gompertz_fixed_plateau",
+            "richards": "richards_fixed_plateau",
+        }.items():
+            candidate = analysis["candidates"][source_id]
+            curve_models[public_id] = {
+                "model_id": public_id,
+                "source_model_id": source_id,
+                "role": "historical_diagnostic",
+                "representation": "parametric",
+                "formula": MODEL_FORMULAS[public_id],
+                "parameters": candidate["joint_fit"]["parameters"],
+                "metrics": candidate["joint_fit"]["metrics"],
+                "replicate_treatment": "joint equal-replicate weighted diagnostic fit",
+                "reference_time_range_s": [0.0, REFERENCE_END_S],
+                "dt_s": REFERENCE_DT_S,
+            }
         replicate_records = {}
         for label, data in analysis["replicates"].items():
-            fit = compact["replicate_fits"][label]
+            fit = production["replicate_fits"][label]
             differences = np.diff(data.time_s)
-            peak_index = int(np.argmax(data.normalized_signal))
-            sustained_below = np.convolve(
-                (data.normalized_signal[peak_index:] < 0.95).astype(np.int64),
-                np.ones(5, dtype=np.int64),
-                mode="valid",
-            )
-            decline_candidates = np.flatnonzero(sustained_below == 5)
-            decline_indicator_time_s = (
-                None
-                if decline_candidates.size == 0
-                else float(data.time_s[peak_index + int(decline_candidates[0])])
-            )
             replicate_records[label] = {
                 "raw_replicate_label": data.raw_replicate_label,
                 "time_column": data.time_column,
                 "signal_column": data.signal_column,
-                "normalization": "raw CenterROI signal divided by this replicate's raw maximum",
+                "normalization": (
+                    "raw CenterROI signal divided by this replicate's raw maximum"
+                ),
                 "original_time_range_s": [float(data.time_s[0]), float(data.time_s[-1])],
                 "sampling_interval_s": {
                     "minimum": float(np.min(differences)),
@@ -799,58 +972,13 @@ def build_reference_export(
                     "maximum": float(np.max(differences)),
                 },
                 "raw_sample_count": int(data.time_s.size),
-                "raw_normalized_start": float(data.normalized_signal[0]),
-                "raw_normalized_peak": float(np.max(data.normalized_signal)),
-                "raw_normalized_final": float(data.normalized_signal[-1]),
-                "raw_normalized_at_saturation_confirmation": float(
-                    data.normalized_signal[data.saturation_confirmation_index]
-                ),
-                "retained_fit_sample_count": data.retained_sample_count,
-                "excluded_post_saturation_sample_count": data.excluded_sample_count,
-                "first_excluded_time_s": (
-                    None
-                    if data.saturation_confirmation_index + 1 >= data.time_s.size
-                    else float(data.time_s[data.saturation_confirmation_index + 1])
-                ),
-                "late_decline_indicator": {
-                    "diagnostic_rule": (
-                        "first sample in the first post-maximum run of five "
-                        "consecutive normalized samples below 0.95"
-                    ),
-                    "time_s": decline_indicator_time_s,
-                },
-                "saturation_window_start_time_s": float(
-                    data.time_s[data.saturation_window_start_index]
-                ),
-                "saturation_confirmation_time_s": data.saturation_time_s,
-                "excluded_reason": "late_post_saturation_signal_drift",
                 "fit": _json_fit_record(fit),
-                "fit_role": "compact_Avrami_diagnostic_only_not_MPC_reference",
+                "fit_sample_scope": "all_finite_samples",
+                "fit_role": "collaborator_original_production_replicate",
             }
-        common_replicates = production["replicate_common_values"]
-        spread = np.std(
-            np.vstack([common_replicates["T1"], common_replicates["T2"]]),
-            axis=0,
-            ddof=1,
-        )
         threshold_times = threshold_times_from_arrays(
             analysis["time_s"], analysis["doc_reference"]
         )
-        threshold_comparison = {}
-        for label, data in analysis["replicates"].items():
-            raw_thresholds = empirical_threshold_times(data)
-            threshold_comparison[label] = {
-                "raw_threshold_times_s": raw_thresholds,
-                "production_threshold_times_s": threshold_times,
-                "production_minus_raw_errors_s": {
-                    key: (
-                        None
-                        if raw_value is None or threshold_times[key] is None
-                        else float(threshold_times[key] - raw_value)
-                    )
-                    for key, raw_value in raw_thresholds.items()
-                },
-            }
         references[condition_id] = {
             "reference_id": condition_id,
             "condition": {
@@ -871,31 +999,24 @@ def build_reference_export(
                 for label, data in analysis["replicates"].items()
             },
             "legacy_label_notes": condition["legacy_label_notes"],
+            "default_curve_model": "collaborator_original",
+            "curve_models": curve_models,
             "production_reference_method": analysis["production_reference_method"],
             "selected_fit_model": analysis["selected_model_id"],
-            "selected_fit_formula": (
-                "increasing isotonic regression of the pointwise 0.5*T1+0.5*T2 "
-                "common-grid trajectory; piecewise-linear interpolation to 0.05 s; "
-                "exactly 1 from production saturation"
-            ),
-            "selected_fit_parameters": {
-                "increasing": True,
-                "lower_bound": 0.0,
-                "upper_bound": 1.0,
-                "isotonic_block_count": production["isotonic_block_count"],
-                "common_grid_dt_s": ISOTONIC_COMMON_DT_S,
-            },
+            "selected_fit_formula": COLLABORATOR_FORMULA,
+            "selected_fit_parameters": production_fit["parameters"],
             "selected_fit_parameter_std_error": {},
-            "fit_metrics": production["metrics"],
-            "compact_diagnostic_fit": {
-                "model_id": analysis["compact_diagnostic_model_id"],
-                "role": "diagnostic_only_not_MPC_reference",
-                "parameters": compact_joint["parameters"],
-                "parameter_std_error": compact_joint["parameter_std_error"],
-                "metrics": compact_joint["metrics"],
-                "fitted_threshold_times_s": compact_joint[
-                    "fitted_threshold_times_s"
-                ],
+            "fit_metrics": production_fit["metrics"],
+            "fitting_routine": {
+                "library": "scipy.optimize.curve_fit",
+                "call": "curve_fit(fitting_func, time, signal)",
+                "initial_guess": None,
+                "bounds": None,
+                "weights": None,
+                "replicate_handling": (
+                    "fit T1 and T2 separately, then take the componentwise "
+                    "arithmetic mean of a, b, and c"
+                ),
             },
             "model_comparison": {
                 model_id: _candidate_export_record(
@@ -904,55 +1025,30 @@ def build_reference_export(
                 for model_id, candidate in analysis["candidates"].items()
             },
             "replicate_fits": replicate_records,
-            "saturation_detection_rule": {
-                "rule_id": SATURATION_RULE_ID,
-                "normalized_threshold": SATURATION_THRESHOLD,
-                "consecutive_samples": SATURATION_CONSECUTIVE_SAMPLES,
-                "description": SATURATION_RULE,
-            },
-            "saturation_times_s": {
-                **{
-                    label: data.saturation_time_s
-                    for label, data in analysis["replicates"].items()
-                },
-                "production": analysis["production_saturation_time_s"],
-            },
-            "post_saturation_reference_behavior": "doc_reference is exactly 1.0",
-            "production_reference_construction_method": REFERENCE_CONSTRUCTION,
-            "equal_replicate_construction": {
-                "common_absolute_time_grid_start_s": 0.0,
-                "common_absolute_time_grid_end_s": analysis[
-                    "production_saturation_time_s"
+            "historical_diagnostics": {
+                "production_status": "none",
+                "models": [
+                    "delayed_avrami_fixed_plateau",
+                    "gompertz_fixed_plateau",
+                    "richards_fixed_plateau",
+                    "isotonic_monotonic_benchmark",
                 ],
-                "common_absolute_time_grid_dt_s": ISOTONIC_COMMON_DT_S,
-                "common_absolute_time_grid_point_count": int(
-                    production["common_time_s"].size
-                ),
-                "replicate_weights": {"T1": 0.5, "T2": 0.5},
-                "replicate_interpolation": "piecewise_linear_absolute_time",
-                "post_replicate_saturation_behavior": (
-                    "replicate DoC held exactly at 1 after its own sustained "
-                    "saturation confirmation"
-                ),
-                "pointwise_combination": "0.5*T1 + 0.5*T2",
-            },
-            "isotonic_regression": {
-                "increasing": True,
-                "lower_bound": 0.0,
-                "upper_bound": 1.0,
-                "block_count": production["isotonic_block_count"],
+                "saturation_rule_used_by_historical_diagnostics_only": {
+                    "rule_id": SATURATION_RULE_ID,
+                    "normalized_threshold": SATURATION_THRESHOLD,
+                    "consecutive_samples": SATURATION_CONSECUTIVE_SAMPLES,
+                    "description": SATURATION_RULE,
+                },
             },
             "runtime_grid_interpolation_method": PRODUCTION_INTERPOLATION_METHOD,
             "threshold_times_s": threshold_times,
-            "production_threshold_comparison_s": threshold_comparison,
-            "replicate_spread": {
-                "method": (
-                    "pointwise standard deviation of common-grid interpolated "
-                    "T1/T2 trajectories before equal-replicate averaging"
-                ),
-                "mean_std_doc": float(np.mean(spread)),
-                "max_std_doc": float(np.max(spread)),
-            },
+            "production_reference_construction_method": (
+                "Evaluate the collaborator-original expression using the "
+                "componentwise arithmetic mean of separately fitted T1/T2 a, b, c "
+                "parameters on the 0.05 s absolute-time grid. No isotonic, Avrami, "
+                "Gompertz, Richards, forced saturation, or post-fit monotonic clamp "
+                "is applied."
+            ),
             "reference_time_range_s": [0.0, REFERENCE_END_S],
             "dt_s": REFERENCE_DT_S,
             "time_s": [float(value) for value in analysis["time_s"]],
@@ -970,8 +1066,70 @@ def build_reference_export(
     }
 
 
+def build_fit_parameters_export(
+    analyses: dict[str, object], repository_dir: Path | str = "."
+) -> dict[str, object]:
+    """Build the compact collaborator-original coefficient artifact."""
+
+    repository_dir = Path(repository_dir)
+    conditions = []
+    for condition_id, analysis in analyses.items():
+        condition = analysis["condition_spec"]
+        production = analysis["candidates"][PRODUCTION_MODEL_ID]
+        replicates = []
+        for label, data in analysis["replicates"].items():
+            parameters = production["replicate_fits"][label]["parameters"]
+            replicates.append(
+                {
+                    "label": label,
+                    "source_column": data.signal_column,
+                    "sample_count": int(data.time_s.size),
+                    "a": parameters["a"],
+                    "b": parameters["b"],
+                    "c": parameters["c"],
+                }
+            )
+        average = production["joint_fit"]["parameters"]
+        conditions.append(
+            {
+                "condition_id": condition_id,
+                "condition_label": condition["condition_label"],
+                "intensity_mw_cm2": condition["intensity_mw_cm2"],
+                "tempo_concentration_mM": condition["tempo_concentration_mM"],
+                "formula_id": PRODUCTION_MODEL_ID,
+                "formula": COLLABORATOR_FORMULA,
+                "source_data_file": SOURCE_DATA_FILE,
+                "source_sheet": SOURCE_SHEET,
+                "replicates": replicates,
+                "average": {
+                    "a": average["a"],
+                    "b": average["b"],
+                    "c": average["c"],
+                },
+            }
+        )
+    return {
+        "schema_version": 1,
+        "calibration_id": "doc_curve_collaborator_original_v2",
+        "source_notebook": SOURCE_NOTEBOOK,
+        "exported_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "averaging_method": "componentwise_arithmetic_mean_of_replicate_coefficients",
+        "conditions": conditions,
+    }
+
+
 def write_reference_export(
-    document: dict[str, object], path: Path | str = "doc_reference_curves.json"
+    document: dict[str, object], path: Path | str = REFERENCE_ARTIFACT_FILE
+) -> Path:
+    path = Path(path)
+    path.write_text(
+        json.dumps(document, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
+    return path
+
+
+def write_fit_parameters_export(
+    document: dict[str, object], path: Path | str = "doc_fit_parameters.json"
 ) -> Path:
     path = Path(path)
     path.write_text(
@@ -984,110 +1142,54 @@ def plot_condition_diagnostics(analysis: dict[str, object]):
     import matplotlib.pyplot as plt
 
     condition = analysis["condition_spec"]
-    production = analysis["candidates"][analysis["selected_model_id"]]
-    compact = analysis["candidates"][analysis["compact_diagnostic_model_id"]]
+    production = analysis["candidates"][PRODUCTION_MODEL_ID]
     figure, axes = plt.subplots(1, 2, figsize=(15, 6.5), sharey=True)
     colors = {"T1": "tab:blue", "T2": "tab:orange"}
+    plot_time = np.linspace(0.0, REFERENCE_END_S, 1001)
     for label, data in analysis["replicates"].items():
         color = colors[label]
-        axes[0].plot(
+        axes[0].scatter(
             data.time_s,
             data.normalized_signal,
             color=color,
-            alpha=0.25,
-            linewidth=1,
+            alpha=0.35,
+            s=12,
             label=f"{label} raw (workbook {data.raw_replicate_label})",
         )
-        axes[0].scatter(
-            data.time_s[data.fit_mask],
-            data.normalized_signal[data.fit_mask],
+        parameters = production["replicate_fits"][label]["parameter_vector"]
+        axes[0].plot(
+            plot_time,
+            collaborator_original_abc(plot_time, *parameters),
             color=color,
-            s=14,
-            label=f"{label} retained",
+            linewidth=1.8,
+            label=f"{label} collaborator-original fit",
         )
-        axes[0].scatter(
-            data.time_s[~data.fit_mask],
-            data.normalized_signal[~data.fit_mask],
-            facecolors="none",
-            color=color,
-            marker="x",
-            s=20,
-            alpha=0.75,
-            label=f"{label} excluded drift",
-        )
-    compact_curve = np.asarray(compact["predict"](analysis["time_s"]), dtype=float)
-    compact_curve = np.maximum.accumulate(np.clip(compact_curve, 0.0, 1.0))
-    compact_curve[
-        analysis["time_s"] >= analysis["production_saturation_time_s"] - 1e-12
-    ] = 1.0
-    axes[0].plot(
-        analysis["time_s"],
-        compact_curve,
-        color="0.35",
-        linewidth=2,
-        linestyle="--",
-        label="compact Avrami diagnostic (not MPC)",
-    )
-    axes[0].plot(
-        production["common_time_s"],
-        production["equal_replicate_mean"],
-        color="tab:cyan",
-        linewidth=1.2,
-        alpha=0.8,
-        label="equal-replicate measured mean",
-    )
-    axes[0].plot(
-        production["common_time_s"],
-        production["isotonic_values"],
-        color="tab:purple",
-        linewidth=2,
-        linestyle=":",
-        label="equal-replicate isotonic benchmark",
-    )
     axes[0].plot(
         analysis["time_s"], analysis["doc_reference"], color="black", linewidth=2.8,
-        label="FINAL MPC production: isotonic + linear interpolation",
+        label="PRODUCTION: collaborator-original averaged a/b/c",
     )
-    axes[0].axhline(1.0, color="0.35", linewidth=1, linestyle=":")
-    thresholds = threshold_times_from_arrays(analysis["time_s"], analysis["doc_reference"])
-    for key, color in zip(
-        ("t10_s", "t30_s", "t50_s", "t90_s"),
-        ("#9467bd", "#8c564b", "#e377c2", "#7f7f7f"),
-    ):
-        axes[0].axvline(thresholds[key], color=color, linewidth=0.9, alpha=0.7)
-    axes[0].axvline(
-        analysis["production_saturation_time_s"], color="black", linestyle=":",
-        linewidth=1.5, label="production t_sat",
-    )
-    axes[0].set_title("Experimental data and MPC production reference")
+    axes[0].set_title("Collaborator-original production fit")
 
     styles = {
-        "old_delayed_exponential": ("0.45", ":"),
+        PRODUCTION_MODEL_ID: ("black", "-"),
         "delayed_avrami_fixed_plateau": ("tab:blue", "--"),
         "gompertz_fixed_plateau": ("tab:green", "--"),
         "richards_fixed_plateau": ("tab:red", "-."),
         "isotonic_monotonic_benchmark": ("tab:purple", (0, (3, 1, 1, 1))),
     }
-    plot_time = np.linspace(0.0, REFERENCE_END_S, 1001)
     for model_id, candidate in analysis["candidates"].items():
         curve = np.asarray(candidate["predict"](plot_time), dtype=float)
-        curve = np.maximum.accumulate(np.clip(curve, 0.0, 1.0))
-        curve[plot_time >= analysis["production_saturation_time_s"]] = 1.0
         color, linestyle = styles[model_id]
         axes[1].plot(
             plot_time, curve, color=color, linestyle=linestyle,
-            linewidth=2.5 if model_id == analysis["selected_model_id"] else 1.5,
-            label=model_id.replace("_", " "),
+            linewidth=3.0 if model_id == PRODUCTION_MODEL_ID else 1.4,
+            label=(
+                "PRODUCTION collaborator original"
+                if model_id == PRODUCTION_MODEL_ID
+                else f"historical diagnostic: {model_id.replace('_', ' ')}"
+            ),
         )
-    axes[1].plot(
-        analysis["time_s"],
-        analysis["doc_reference"],
-        color="black",
-        linewidth=3.0,
-        label="FINAL MPC isotonic reference",
-    )
-    axes[1].axhline(1.0, color="0.35", linewidth=1, linestyle=":")
-    axes[1].set_title("Diagnostic model comparison (production is isotonic)")
+    axes[1].set_title("Historical comparison (custom models are not production)")
     for axis in axes:
         axis.set_xlim(0.0, REFERENCE_END_S)
         axis.set_ylim(-0.02, 1.03)
@@ -1153,7 +1255,11 @@ def main() -> None:
     analyses = analyze_all_conditions(repository_dir)
     document = build_reference_export(analyses, repository_dir)
     export_path = write_reference_export(
-        document, repository_dir / "doc_reference_curves.json"
+        document, repository_dir / REFERENCE_ARTIFACT_FILE
+    )
+    fit_parameters_path = write_fit_parameters_export(
+        build_fit_parameters_export(analyses, repository_dir),
+        repository_dir / "doc_fit_parameters.json",
     )
     figure_paths = save_diagnostic_figures(analyses, repository_dir)
     for condition_id, analysis in analyses.items():
@@ -1162,6 +1268,7 @@ def main() -> None:
     print("\n=== Reference comparison ===")
     print(reference_comparison_table(analyses).to_string())
     print(f"\nWrote {export_path}")
+    print(f"Wrote {fit_parameters_path}")
     for label, path in figure_paths.items():
         print(f"Wrote {label}: {path}")
 

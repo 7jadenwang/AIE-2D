@@ -42,16 +42,30 @@ from aie_model import (
 from aie_mpc import DifferentiableMPC
 import aie_reference
 from aie_reference import (
+    SUPPORTED_FORWARD_CONDITIONS,
     load_reference_config,
     load_reference_config_for_condition,
     reference_step_torch,
 )
 from doc_reference import (
-    EXPECTED_CONDITIONS,
-    PRODUCTION_REFERENCE_METHOD,
+    CURVE_MODEL_IDS,
+    DEFAULT_REFERENCE_PATH,
+    DEFAULT_REFERENCE_ID,
+    LEGACY_REFERENCE_PATH,
     DoCReferenceCurve,
+    available_curve_models,
     available_doc_reference_ids,
     load_doc_reference,
+)
+from tracking_config import (
+    SPATIAL_DEFINITIONS,
+    TRACKING_LOSSES,
+    TRACKING_MODES,
+    TrackingConfigurationError,
+    TrackingSpecification,
+    parse_checkpoints as parse_tracking_checkpoints,
+    parse_float_list,
+    resolve_sampled_tracking_times,
 )
 from mpc_metrics import (
     GEOMETRY_THRESHOLD_NOTE,
@@ -65,7 +79,9 @@ GEO_DIR = REPOSITORY_DIR / "GEO"
 
 
 def assess_reference_physics_match(
-    reference_curve: DoCReferenceCurve, params: AIEParameters
+    reference_curve: DoCReferenceCurve,
+    params: AIEParameters,
+    physics_condition_id: str | None = None,
 ) -> dict[str, object]:
     """Audit whether authoritative forward physics matches a tracking condition."""
 
@@ -73,38 +89,58 @@ def assess_reference_physics_match(
     intensity = float(condition["intensity_mw_cm2"])
     tempo_mM = float(condition["tempo_concentration_mM"])
     missing: list[str] = []
+    try:
+        selected_condition = physics_condition_id or reference_curve.reference_id
+        expected = AIEParameters.from_reference(
+            load_reference_config_for_condition(selected_condition)
+        )
+    except (ValueError, aie_reference.ReferenceResolutionError) as error:
+        expected = None
+        missing.append(f"named authoritative condition: {error}")
+    if expected is not None:
+        compared_fields = (
+            "intensity_mw_cm2",
+            "tempo_concentration_mM",
+            "o2_inhibition_mj_cm2",
+            "total_inhibition_mj_cm2",
+            "o2_diffusivity_m2_s",
+            "tempo_diffusivity_m2_s",
+            "b_slope",
+            "b_intercept",
+            "scattering_blur_size_m",
+            "dt",
+        )
+        for field_name in compared_fields:
+            actual_value = getattr(params, field_name)
+            expected_value = getattr(expected, field_name)
+            if actual_value is None or expected_value is None:
+                equal = actual_value is expected_value
+            else:
+                equal = math.isclose(
+                    float(actual_value),
+                    float(expected_value),
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            if not equal:
+                missing.append(
+                    f"{field_name}={expected_value!r} (actual {actual_value!r})"
+                )
     if not math.isclose(
         params.intensity_mw_cm2, intensity, rel_tol=0.0, abs_tol=1e-12
     ):
-        missing.append(
-            f"authoritative intensity={intensity:g} mW/cm^2 configuration"
-        )
-
-    normalized_b_label = params.b_condition_label.lower().replace(" ", "")
-    if math.isclose(tempo_mM, 0.0, rel_tol=0.0, abs_tol=1e-12):
-        if not math.isclose(
-            params.tempo_inhibition_mj_cm2, 0.0, rel_tol=0.0, abs_tol=1e-12
-        ):
-            missing.append("zero-TEMPO inhibition configuration")
-        if "0mmtempo" not in normalized_b_label:
-            missing.append("0 mM TEMPO B/intensity coefficients")
-    elif math.isclose(tempo_mM, 5.0, rel_tol=0.0, abs_tol=1e-12):
-        if params.tempo_concentration_mM is None or not math.isclose(
-            params.tempo_concentration_mM, 5.0, rel_tol=0.0, abs_tol=1e-12
-        ):
-            missing.append("explicit authoritative TEMPO_concentration_mM=5 condition")
-        if params.total_inhibition_mj_cm2 <= params.o2_inhibition_mj_cm2:
-            missing.append("validated 5 mM total/TEMPO inhibition energy")
-        if "5mmtempo" not in normalized_b_label:
-            missing.append("validated 5 mM B/intensity kinetic coefficients")
-    else:
-        missing.append(f"authoritative {tempo_mM:g} mM TEMPO configuration")
+        missing.append(f"tracking-reference intensity={intensity:g} mW/cm^2")
+    if params.tempo_concentration_mM is None or not math.isclose(
+        params.tempo_concentration_mM, tempo_mM, rel_tol=0.0, abs_tol=1e-12
+    ):
+        missing.append(f"tracking-reference TEMPO={tempo_mM:g} mM")
 
     matched = not missing
     return {
         "matched": matched,
         "tracking_reference_id": reference_curve.reference_id,
         "tracking_condition": condition,
+        "selected_forward_condition": physics_condition_id or reference_curve.reference_id,
         "forward_intensity_mw_cm2": params.intensity_mw_cm2,
         "forward_tempo_concentration_mM": params.tempo_concentration_mM,
         "forward_o2_inhibition_mj_cm2": params.o2_inhibition_mj_cm2,
@@ -486,6 +522,15 @@ def doc_region_metrics(
 ) -> tuple[float, float]:
     """Compute target and outside mean DoC with the MPC threshold convention."""
 
+    summary = doc_region_summary(doc, target, target_threshold)
+    return summary["mean_target_doc"], summary["mean_outside_doc"]
+
+
+def doc_region_summary(
+    doc: torch.Tensor, target: torch.Tensor, target_threshold: float
+) -> dict[str, float]:
+    """Compute target-region spread and outside mean using the MPC convention."""
+
     if tuple(doc.shape) != tuple(target.shape):
         raise ValueError(
             f"DoC shape {tuple(doc.shape)} does not match target shape "
@@ -495,11 +540,17 @@ def doc_region_metrics(
     if not bool(target_region.any()):
         raise ValueError("target has no pixels above target_threshold")
     outside_region = ~target_region
-    target_mean = float(doc[target_region].mean())
+    target_values = doc[target_region]
     outside_mean = (
         float(doc[outside_region].mean()) if bool(outside_region.any()) else 0.0
     )
-    return target_mean, outside_mean
+    return {
+        "mean_target_doc": float(target_values.mean()),
+        "min_target_doc": float(target_values.min()),
+        "max_target_doc": float(target_values.max()),
+        "std_target_doc": float(target_values.std(unbiased=False)),
+        "mean_outside_doc": outside_mean,
+    }
 
 
 def resolve_control_timing(
@@ -534,6 +585,231 @@ def resolve_control_timing(
     return control_steps, control_steps * control_dt_s
 
 
+def parse_checkpoints(specification: str | None) -> tuple[tuple[float, float], ...]:
+    """Parse ``time:DoC,time:DoC`` without inventing intermediate targets."""
+
+    if specification is None or not specification.strip():
+        raise ValueError("checkpoint mode requires --checkpoints time:DoC,...")
+    checkpoints: list[tuple[float, float]] = []
+    for item in specification.split(","):
+        fields = item.strip().split(":")
+        if len(fields) != 2:
+            raise ValueError(
+                f"invalid checkpoint {item!r}; expected time:DoC,time:DoC"
+            )
+        try:
+            time_s, required_doc = (float(field.strip()) for field in fields)
+        except ValueError as error:
+            raise ValueError(f"checkpoint {item!r} must contain numbers") from error
+        if not math.isfinite(time_s) or time_s <= 0:
+            raise ValueError("checkpoint times must be finite and positive")
+        if not math.isfinite(required_doc) or not 0 <= required_doc <= 1:
+            raise ValueError("checkpoint DoC values must be finite and in [0,1]")
+        checkpoints.append((time_s, required_doc))
+    times = [time_s for time_s, _ in checkpoints]
+    if times != sorted(times) or len(times) != len(set(times)):
+        raise ValueError("checkpoint times must be strictly increasing and unique")
+    return tuple(checkpoints)
+
+
+def validate_checkpoint_schedule(
+    checkpoints: tuple[tuple[float, float], ...],
+    *,
+    control_dt_s: float,
+    total_time_s: float,
+) -> None:
+    """Require exact absolute control-grid alignment and in-run checkpoints."""
+
+    for time_s, _ in checkpoints:
+        control_index = round(time_s / control_dt_s)
+        aligned_time = control_index * control_dt_s
+        if not math.isclose(time_s, aligned_time, rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError(
+                f"checkpoint time {time_s:g} s is not aligned to control_dt="
+                f"{control_dt_s:g} s; checkpoints are never rounded"
+            )
+        if time_s > total_time_s + 1e-9:
+            raise ValueError(
+                f"checkpoint time {time_s:g} s exceeds total time {total_time_s:g} s"
+            )
+
+
+def checkpoint_horizon_warnings(
+    checkpoints: tuple[tuple[float, float], ...],
+    *,
+    horizon: int,
+    control_dt_s: float,
+) -> list[str]:
+    """Return visibility warnings without overriding the requested horizon."""
+
+    lookahead_s = horizon * control_dt_s
+    messages = []
+    for (first_time, _), (second_time, _) in zip(checkpoints, checkpoints[1:]):
+        spacing = second_time - first_time
+        if spacing > lookahead_s + 1e-9:
+            messages.append(
+                f"checkpoint spacing {spacing:g} s ({first_time:g}->{second_time:g} s) "
+                f"exceeds the {lookahead_s:g} s prediction horizon"
+            )
+    return messages
+
+
+def resolve_tracking_configuration(
+    args: argparse.Namespace,
+    *,
+    control_dt_s: float,
+    total_time_s: float,
+) -> tuple[TrackingSpecification, DoCReferenceCurve | None, tuple[str, ...]]:
+    """Resolve and validate all target-side tracking choices before optimization."""
+
+    mode = args.tracking_mode
+    point_weights = parse_float_list(args.point_weights, label="--point-weights")
+    common = {
+        "point_weights": point_weights,
+        "spatial_definition": args.tracking_spatial_definition,
+        "tracking_loss": args.tracking_loss,
+        "huber_delta": args.huber_delta,
+    }
+    warnings: list[str] = []
+    if mode == "checkpoints":
+        if args.doc_reference is not None:
+            raise TrackingConfigurationError(
+                "checkpoint mode must not specify --doc-reference"
+            )
+        if args.tracking_times or args.num_tracking_points is not None:
+            raise TrackingConfigurationError(
+                "checkpoint mode uses --checkpoints, not sampled-curve time options"
+            )
+        specification = TrackingSpecification.checkpoints(
+            parse_tracking_checkpoints(args.checkpoints), **common
+        )
+        reference_curve = None
+    else:
+        if args.checkpoints is not None:
+            raise TrackingConfigurationError(
+                "--checkpoints is valid only with --tracking-mode checkpoints"
+            )
+        reference_curve = load_doc_reference(
+            args.doc_reference or DEFAULT_REFERENCE_ID,
+            path=args.reference_artifact,
+            curve_model=args.curve_model,
+        )
+        if mode == "curve":
+            if (
+                args.tracking_times
+                or args.num_tracking_points is not None
+                or args.tracking_start is not None
+                or args.tracking_end is not None
+                or point_weights
+            ):
+                raise TrackingConfigurationError(
+                    "dense curve mode must not define sparse times or point weights"
+                )
+            specification = TrackingSpecification.curve(
+                reference_curve,
+                spatial_definition=args.tracking_spatial_definition,
+                tracking_loss=args.tracking_loss,
+                huber_delta=args.huber_delta,
+            )
+        else:
+            explicit_times = parse_float_list(
+                args.tracking_times, label="--tracking-times"
+            )
+            times, sampled_warnings = resolve_sampled_tracking_times(
+                explicit_times_s=explicit_times,
+                count=args.num_tracking_points,
+                start_s=args.tracking_start,
+                end_s=args.tracking_end,
+            )
+            warnings.extend(sampled_warnings)
+            specification = TrackingSpecification.sampled_curve(
+                reference_curve, times, **common
+            )
+    warnings.extend(
+        specification.validate_runtime(control_dt_s, total_time_s, args.horizon)
+    )
+    return specification, reference_curve, tuple(warnings)
+
+
+def calculate_checkpoint_tracking(
+    control_times_s: np.ndarray,
+    mean_target_doc: np.ndarray,
+    min_target_doc: np.ndarray,
+    max_target_doc: np.ndarray,
+    std_target_doc: np.ndarray,
+    checkpoints: tuple[tuple[float, float], ...],
+) -> dict[str, object]:
+    """Extract target-region DoC statistics and errors at sparse tracking points."""
+
+    requested = np.asarray([value for _, value in checkpoints], dtype=float)
+    checkpoint_times = np.asarray([time_s for time_s, _ in checkpoints], dtype=float)
+    achieved = np.empty_like(requested)
+    minimum = np.empty_like(requested)
+    maximum = np.empty_like(requested)
+    standard_deviation = np.empty_like(requested)
+    for index, checkpoint_time in enumerate(checkpoint_times):
+        matches = np.flatnonzero(
+            np.isclose(control_times_s, checkpoint_time, rtol=0.0, atol=1e-9)
+        )
+        if matches.size != 1:
+            raise AssertionError(
+                f"checkpoint {checkpoint_time:g} s matched {matches.size} applied times"
+            )
+        matched_index = int(matches[0])
+        achieved[index] = mean_target_doc[matched_index]
+        minimum[index] = min_target_doc[matched_index]
+        maximum[index] = max_target_doc[matched_index]
+        standard_deviation[index] = std_target_doc[matched_index]
+    errors = achieved - requested
+    return {
+        "times_s": checkpoint_times,
+        "requested_doc": requested,
+        "achieved_doc": achieved,
+        "mean_target_doc": achieved,
+        "min_target_doc": minimum,
+        "max_target_doc": maximum,
+        "std_target_doc": standard_deviation,
+        "lower_error": achieved - minimum,
+        "upper_error": maximum - achieved,
+        "errors": errors,
+        "rmse": float(np.sqrt(np.mean(np.square(errors)))),
+        "mae": float(np.mean(np.abs(errors))),
+        "max_absolute_error": float(np.max(np.abs(errors))),
+    }
+
+
+def save_tracking_points_csv(tracking: dict[str, object], path: Path) -> None:
+    """Save sparse/checkpoint target-region statistics in a tidy table."""
+
+    columns = (
+        "time_s",
+        "requested_target_doc",
+        "mean_target_doc",
+        "min_target_doc",
+        "max_target_doc",
+        "std_target_doc",
+        "lower_error",
+        "upper_error",
+        "mean_error",
+    )
+    arrays = (
+        tracking["times_s"],
+        tracking["requested_doc"],
+        tracking["mean_target_doc"],
+        tracking["min_target_doc"],
+        tracking["max_target_doc"],
+        tracking["std_target_doc"],
+        tracking["lower_error"],
+        tracking["upper_error"],
+        tracking["errors"],
+    )
+    with path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        for values in zip(*arrays):
+            writer.writerow(dict(zip(columns, (float(value) for value in values))))
+
+
 def save_component_metrics_csv(rows: list[dict[str, object]], path: Path) -> None:
     """Save the complete component table without flooding terminal output."""
 
@@ -557,6 +833,8 @@ def save_tracking_plot(
     total_time_s: float,
     control_times_s: np.ndarray,
     actual_target_doc: np.ndarray,
+    min_target_doc: np.ndarray,
+    max_target_doc: np.ndarray,
     path: Path,
 ) -> None:
     """Save experimental-reference versus closed-loop mean target DoC."""
@@ -570,9 +848,21 @@ def save_tracking_plot(
     reference_doc = np.asarray(reference_curve.at(reference_time))
     figure, axis = plt.subplots(figsize=(8, 5))
     axis.plot(reference_time, reference_doc, label="experimental reference", linewidth=2)
+    achieved_times = np.r_[0.0, control_times_s]
+    achieved_mean = np.r_[0.0, actual_target_doc]
+    achieved_min = np.r_[0.0, min_target_doc]
+    achieved_max = np.r_[0.0, max_target_doc]
+    axis.fill_between(
+        achieved_times,
+        achieved_min,
+        achieved_max,
+        color="tab:orange",
+        alpha=0.22,
+        label="target-region min-max range",
+    )
     axis.plot(
-        np.r_[0.0, control_times_s],
-        np.r_[0.0, actual_target_doc],
+        achieved_times,
+        achieved_mean,
         "o-",
         markersize=3,
         label="closed-loop mean target DoC",
@@ -590,6 +880,69 @@ def save_tracking_plot(
     plt.close(figure)
 
 
+def save_checkpoint_tracking_plot(
+    total_time_s: float,
+    control_times_s: np.ndarray,
+    actual_target_doc: np.ndarray,
+    checkpoint_tracking: dict[str, object],
+    path: Path,
+    *,
+    marker_label: str = "explicit target checkpoints",
+    title: str = "Checkpoint DoC tracking",
+) -> None:
+    """Plot simulated DoC continuously and sparse requirements only as markers."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    figure, axis = plt.subplots(figsize=(8, 5))
+    axis.plot(
+        np.r_[0.0, control_times_s],
+        np.r_[0.0, actual_target_doc],
+        "o-",
+        markersize=3,
+        label="simulated mean target DoC",
+    )
+    axis.scatter(
+        checkpoint_tracking["times_s"],
+        checkpoint_tracking["requested_doc"],
+        s=90,
+        marker="X",
+        color="tab:red",
+        zorder=5,
+        label=marker_label,
+    )
+    axis.errorbar(
+        checkpoint_tracking["times_s"],
+        checkpoint_tracking["mean_target_doc"],
+        yerr=np.vstack(
+            (
+                checkpoint_tracking["lower_error"],
+                checkpoint_tracking["upper_error"],
+            )
+        ),
+        fmt="o",
+        markersize=5,
+        capsize=4,
+        color="tab:orange",
+        ecolor="tab:orange",
+        zorder=4,
+        label="achieved mean with target min-max range",
+    )
+    axis.set_xlim(0.0, total_time_s)
+    axis.set_ylim(0.0, 1.02)
+    axis.set_xlabel("Absolute process time (s)")
+    axis.set_ylabel("Degree of conversion")
+    axis.set_title(title)
+    axis.grid(alpha=0.25)
+    axis.legend()
+    figure.tight_layout()
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
 def _format_optional(value: float | None, suffix: str = "") -> str:
     return "undefined" if value is None else f"{value:.6f}{suffix}"
 
@@ -597,10 +950,15 @@ def _format_optional(value: float | None, suffix: str = "") -> str:
 def print_metrics_summary(
     *,
     reference_id: str,
+    tracking_mode: str,
     total_time_s: float,
     tracking: dict[str, float],
+    checkpoint_tracking: dict[str, object] | None,
     reference_final_doc: float,
     target_mean_doc: float,
+    target_min_doc: float,
+    target_max_doc: float,
+    target_std_doc: float,
     outside_mean_doc: float,
     final_metrics: dict[str, object],
 ) -> None:
@@ -611,15 +969,52 @@ def print_metrics_summary(
     boundary = final_metrics["boundary"]
     components = final_metrics["components"]
     holes = final_metrics["holes"]
-    print("\n=== Closed-loop tracking ===")
-    print(f"reference ID:              {reference_id}")
-    print(f"total time:                {total_time_s:.2f} s")
-    print(f"tracking RMSE:             {tracking['rmse']:.6f}")
-    print(f"tracking MAE:              {tracking['mae']:.6f}")
-    print(f"maximum absolute error:    {tracking['max_absolute_error']:.6f}")
+    if tracking_mode != "curve":
+        assert checkpoint_tracking is not None
+        heading = (
+            "Checkpoint tracking summary"
+            if tracking_mode == "checkpoints"
+            else "Sampled-curve tracking summary"
+        )
+        reference_type = (
+            "explicit target checkpoints"
+            if tracking_mode == "checkpoints"
+            else "selected curve sampled at explicit absolute times"
+        )
+        print(f"\n=== {heading} ===")
+        print(f"reference type:            {reference_type}")
+        print(f"physics condition:         {reference_id}")
+        print(f"total time:                {total_time_s:.2f} s")
+        print("time    requested      mean       min       max       std     mean error")
+        for time_s, requested, achieved, minimum, maximum, std, error in zip(
+            checkpoint_tracking["times_s"],
+            checkpoint_tracking["requested_doc"],
+            checkpoint_tracking["mean_target_doc"],
+            checkpoint_tracking["min_target_doc"],
+            checkpoint_tracking["max_target_doc"],
+            checkpoint_tracking["std_target_doc"],
+            checkpoint_tracking["errors"],
+        ):
+            print(
+                f"{time_s:5.2f}   {requested:9.4f}  {achieved:8.4f}  "
+                f"{minimum:8.4f}  {maximum:8.4f}  {std:8.4f}  {error:+10.4f}"
+            )
+        print(f"sparse-point RMSE:         {tracking['rmse']:.6f}")
+        print(f"sparse-point MAE:          {tracking['mae']:.6f}")
+        print(f"sparse max abs error:      {tracking['max_absolute_error']:.6f}")
+    else:
+        print("\n=== Closed-loop tracking ===")
+        print(f"reference ID:              {reference_id}")
+        print(f"total time:                {total_time_s:.2f} s")
+        print(f"tracking RMSE:             {tracking['rmse']:.6f}")
+        print(f"tracking MAE:              {tracking['mae']:.6f}")
+        print(f"maximum absolute error:    {tracking['max_absolute_error']:.6f}")
     print("\n=== Final DoC ===")
     print(f"reference final DoC:       {reference_final_doc:.6f}")
     print(f"mean target DoC:           {target_mean_doc:.6f}")
+    print(f"min target DoC:            {target_min_doc:.6f}")
+    print(f"max target DoC:            {target_max_doc:.6f}")
+    print(f"std target DoC:            {target_std_doc:.6f}")
     print(f"mean outside DoC:          {outside_mean_doc:.6f}")
     print(f"full-image DoC RMSE:       {soft['full_image_rmse']:.6f}")
     print(f"target DoC RMSE:           {soft['target_region_rmse']:.6f}")
@@ -659,6 +1054,12 @@ def print_metrics_summary(
     )
     print("\n=== Features ===")
     print(f"target components:         {components['count']}")
+    print(
+        "component mean DoC mean/min/max: "
+        f"{_format_optional(components['component_mean_doc_mean'])}/"
+        f"{_format_optional(components['component_mean_doc_min'])}/"
+        f"{_format_optional(components['component_mean_doc_max'])}"
+    )
     print(
         "worst component mean DoC:  "
         f"{_format_optional(components['worst_mean_doc'])}"
@@ -718,12 +1119,15 @@ def _print_resolution_header(
     print(f"derived_control_steps={args.control_steps}")
 
 
-def _print_parameter_provenance(params: AIEParameters) -> None:
+def _print_parameter_provenance(
+    params: AIEParameters, reference: aie_reference.ReferenceConfig
+) -> None:
     """Print the effective physical/model source at simulation startup."""
 
     print(f"Reference model: {params.reference_model_source}")
     print(f"Reference SHA256: {params.reference_model_sha256}")
     print(f"Reference structure SHA256: {params.reference_structure_sha256}")
+    print(f"resolved source mode: {reference.physics_resolution_mode}")
     print(f"DoC calibration: {params.doc_calibration_source}")
     print(f"DoC calibration SHA256: {params.doc_calibration_sha256}")
     print(
@@ -753,6 +1157,15 @@ def _print_parameter_provenance(params: AIEParameters) -> None:
         f"active B: {params.b_slope:.12g} * local_intensity + "
         f"{params.b_intercept:.12g} ({params.b_condition_label})"
     )
+    value_sources = dict(reference.physics_value_sources)
+    print(
+        "physics value sources: "
+        f"intensity={value_sources.get('intensity', 'unknown')}; "
+        f"O2 inhibition={value_sources.get('o2_inhibition', 'unknown')}; "
+        f"total inhibition={value_sources.get('total_inhibition', 'unknown')}; "
+        f"TEMPO inhibition={value_sources.get('tempo_inhibition', 'unknown')}; "
+        f"B law={value_sources.get('b_law', 'unknown')}"
+    )
     print(f"chain-growth B noise std: {params.chain_growth_noise_std:.6g}")
     print(f"DoC fit selection: {params.doc_fit_selection_status}")
     if params.doc_fit_condition_id is not None:
@@ -773,8 +1186,8 @@ def _print_parameter_provenance(params: AIEParameters) -> None:
 def run_demo(args: argparse.Namespace) -> None:
     """Run native MPC or coarse MPC followed by required native replay."""
 
-    doc_reference = load_doc_reference(args.doc_reference)
-    reference = load_reference_config_for_condition(doc_reference.reference_id)
+    physics_condition = args.physics_condition
+    reference = load_reference_config_for_condition(physics_condition)
     native_params = native_aie_parameters(reference)
     control_dt_s = native_params.dt * args.physics_steps_per_control
     control_steps, total_time_s = resolve_control_timing(
@@ -784,16 +1197,37 @@ def run_demo(args: argparse.Namespace) -> None:
     )
     args.control_steps = control_steps
     args.total_time = total_time_s
-    physics_match = assess_reference_physics_match(doc_reference, native_params)
-    physics_match["override_used"] = bool(args.allow_reference_physics_mismatch)
-    if not physics_match["matched"] and not args.allow_reference_physics_mismatch:
-        missing = "; ".join(physics_match["missing_for_physical_match"])
-        raise ValueError(
-            f"tracking reference {doc_reference.reference_id} does not have a "
-            f"validated matching authoritative forward-physics configuration: "
-            f"{missing}. Use --allow-reference-physics-mismatch only for an "
-            "explicit research/debug comparison."
+    tracking_specification, doc_reference, tracking_warnings = (
+        resolve_tracking_configuration(
+            args, control_dt_s=control_dt_s, total_time_s=total_time_s
         )
+    )
+    checkpoints = tuple(
+        zip(tracking_specification.point_times_s, tracking_specification.point_values)
+    )
+    if doc_reference is not None:
+        physics_match = assess_reference_physics_match(
+            doc_reference, native_params, physics_condition
+        )
+        physics_match["override_used"] = bool(args.allow_reference_physics_mismatch)
+        if not physics_match["matched"] and not args.allow_reference_physics_mismatch:
+            missing = "; ".join(physics_match["missing_for_physical_match"])
+            raise ValueError(
+                f"tracking reference {doc_reference.reference_id} does not have a "
+                f"validated matching authoritative forward-physics configuration: "
+                f"{missing}. Use --allow-reference-physics-mismatch only for an "
+                "explicit research/debug comparison."
+            )
+    else:
+        physics_match = {
+            "matched": True,
+            "tracking_reference_type": "explicit_checkpoints",
+            "tracking_reference_source": "collaborator_specification",
+            "forward_condition_id": physics_condition,
+            "forward_intensity_mw_cm2": native_params.intensity_mw_cm2,
+            "forward_tempo_concentration_mM": native_params.tempo_concentration_mM,
+            "override_used": False,
+        }
     target_path = resolve_target_path(args.target)
     target_native = load_normalized_target(target_path)
     require_native_target(target_native, target_path)
@@ -814,28 +1248,58 @@ def run_demo(args: argparse.Namespace) -> None:
             projector_refinement=1,
         )
     )
-    _print_parameter_provenance(native_params)
-    condition = doc_reference.metadata["condition"]
-    thresholds = doc_reference.metadata["threshold_times_s"]
-    print(f"DoC tracking reference ID: {doc_reference.reference_id}")
+    print(f"forward physics selector: {physics_condition}")
+    _print_parameter_provenance(native_params, reference)
+    print(f"tracking spatial definition: {args.tracking_spatial_definition}")
+    print(f"tracking loss: {args.tracking_loss}")
+    if args.tracking_loss == "huber":
+        print(f"Huber delta: {args.huber_delta:g}")
     print(
-        "DoC tracking condition: "
-        f"{condition['intensity_mw_cm2']:g} mW/cm^2, "
-        f"{condition['tempo_concentration_mM']:g} mM TEMPO"
+        "controller weights target/outside/energy/smoothness: "
+        f"{args.target_weight:g}/{args.outside_weight:g}/"
+        f"{args.energy_weight:g}/{args.smoothness_weight:g}"
     )
-    print(
-        "DoC reference production model: "
-        f"{doc_reference.metadata['selected_fit_model']} "
-        f"({doc_reference.metadata['production_reference_method']})"
-    )
-    print(f"DoC reference saturation time: {doc_reference.saturation_time_s:.3f} s")
-    print(
-        "DoC reference t10/t50/t90: "
-        f"{thresholds['t10_s']:.3f}/{thresholds['t50_s']:.3f}/"
-        f"{thresholds['t90_s']:.3f} s"
-    )
-    print(f"DoC reference artifact SHA256: {doc_reference.source_sha256}")
-    if not physics_match["matched"]:
+    if doc_reference is not None:
+        condition = doc_reference.metadata["condition"]
+        thresholds = doc_reference.metadata.get("threshold_times_s", {})
+        print(f"tracking_mode={args.tracking_mode}")
+        print(f"DoC tracking reference ID: {doc_reference.reference_id}")
+        print(
+            "DoC tracking condition: "
+            f"{condition['intensity_mw_cm2']:g} mW/cm^2, "
+            f"{condition['tempo_concentration_mM']:g} mM TEMPO"
+        )
+        print(
+            "DoC curve model: "
+            f"{doc_reference.curve_model} "
+            f"({doc_reference.metadata.get('curve_model_role', 'unspecified role')})"
+        )
+        if all(name in thresholds for name in ("t10_s", "t50_s", "t90_s")):
+            print(
+                "artifact t10/t50/t90: "
+                f"{thresholds['t10_s']:.3f}/{thresholds['t50_s']:.3f}/"
+                f"{thresholds['t90_s']:.3f} s"
+            )
+        print(f"DoC reference artifact SHA256: {doc_reference.source_sha256}")
+        if args.tracking_mode == "sampled-curve":
+            print("sampled curve requirements (absolute process time):")
+            for point_time_s, required_doc in checkpoints:
+                print(f"  t={point_time_s:.2f} s -> DoC={required_doc:.4f}")
+    else:
+        print("tracking_mode=checkpoints")
+        print("tracking_reference_type=explicit_checkpoints")
+        print("tracking_reference_source=collaborator_specification")
+        print(f"forward_physics_condition={physics_condition}")
+        print("checkpoint requirements (absolute process time):")
+        for checkpoint_time_s, required_doc in checkpoints:
+            print(f"  t={checkpoint_time_s:.2f} s -> DoC={required_doc:.4f}")
+        print(
+            "target-side tracking is evaluated only at listed checkpoints; "
+            "outside/energy/smoothness penalties remain dense"
+        )
+    for message in tracking_warnings:
+        print(f"WARNING: {message}")
+    if doc_reference is not None and not physics_match["matched"]:
         print("\n!!!!!!!!!!!!!!!! PHYSICS/REFERENCE MISMATCH !!!!!!!!!!!!!!!!")
         print(f"tracking reference = {doc_reference.reference_id}")
         print("forward physics != validated matching experimental condition")
@@ -856,7 +1320,7 @@ def run_demo(args: argparse.Namespace) -> None:
     controller = DifferentiableMPC(
         model=model,
         target=optimization_target,
-        reference_curve=doc_reference,
+        tracking_specification=tracking_specification,
         horizon=args.horizon,
         physics_steps_per_control=args.physics_steps_per_control,
         target_threshold=args.target_threshold,
@@ -883,6 +1347,9 @@ def run_demo(args: argparse.Namespace) -> None:
     optimization_control_times_s: list[float] = []
     optimization_reference_doc: list[float] = []
     optimization_target_doc: list[float] = []
+    optimization_target_doc_min: list[float] = []
+    optimization_target_doc_max: list[float] = []
+    optimization_target_doc_std: list[float] = []
     optimization_outside_doc: list[float] = []
     coarse_doc_frame_paths: list[Path] = []
     native_doc_frame_paths: list[Path] = []
@@ -950,28 +1417,78 @@ def run_demo(args: argparse.Namespace) -> None:
             args.output_dir / f"applied_mask_native_{control_step:03d}.png",
         )
 
-        target_doc_mean, outside_doc_mean = doc_region_metrics(
+        target_doc_summary = doc_region_summary(
             state.doc, optimization_target, args.target_threshold
         )
+        target_doc_mean = target_doc_summary["mean_target_doc"]
+        target_doc_min = target_doc_summary["min_target_doc"]
+        target_doc_max = target_doc_summary["max_target_doc"]
+        target_doc_std = target_doc_summary["std_target_doc"]
+        outside_doc_mean = target_doc_summary["mean_outside_doc"]
         applied_time_s = (control_step + 1) * control_dt_s
-        reference_doc = float(doc_reference.at(applied_time_s))
+        if args.tracking_mode == "curve":
+            assert doc_reference is not None
+            reference_doc = float(doc_reference.at(applied_time_s))
+        else:
+            reference_doc = float("nan")
+            for point_time_s, point_doc in checkpoints:
+                if math.isclose(
+                    applied_time_s, point_time_s, rel_tol=0.0, abs_tol=1e-9
+                ):
+                    reference_doc = float(point_doc)
+                    break
         optimization_control_times_s.append(applied_time_s)
         optimization_reference_doc.append(reference_doc)
         optimization_target_doc.append(target_doc_mean)
+        optimization_target_doc_min.append(target_doc_min)
+        optimization_target_doc_max.append(target_doc_max)
+        optimization_target_doc_std.append(target_doc_std)
         optimization_outside_doc.append(outside_doc_mean)
-        running_error = np.asarray(optimization_target_doc) - np.asarray(
-            optimization_reference_doc
+        running_reference = np.asarray(optimization_reference_doc, dtype=float)
+        running_actual = np.asarray(optimization_target_doc, dtype=float)
+        active_reporting = np.isfinite(running_reference)
+        running_rmse = (
+            float(
+                np.sqrt(
+                    np.mean(
+                        np.square(
+                            running_actual[active_reporting]
+                            - running_reference[active_reporting]
+                        )
+                    )
+                )
+            )
+            if np.any(active_reporting)
+            else float("nan")
         )
-        running_rmse = float(np.sqrt(np.mean(np.square(running_error))))
         elapsed = time.perf_counter() - started
+        reference_text = f"{reference_doc:.4f}" if math.isfinite(reference_doc) else "--"
+        running_text = f"{running_rmse:.5f}" if math.isfinite(running_rmse) else "--"
         print(
             f"step {control_step + 1:02d}/{args.control_steps:02d} "
-            f"t={applied_time_s:.2f}s ref={reference_doc:.4f} "
+            f"t={applied_time_s:.2f}s ref={reference_text} "
             f"loss {info['initial_loss']:.5f}->{info['final_loss']:.5f} "
-            f"DoC(target/out)={target_doc_mean:.4f}/{outside_doc_mean:.4f} "
-            f"track_rmse={running_rmse:.5f} "
+            "DoC(target mean/min/max/std)="
+            f"{target_doc_mean:.4f}/{target_doc_min:.4f}/"
+            f"{target_doc_max:.4f}/{target_doc_std:.4f} "
+            f"out={outside_doc_mean:.4f} "
+            f"track_rmse={running_text} "
             f"mask_mean={float(applied_control.mean()):.3f} solve={elapsed:.2f}s"
         )
+        if args.tracking_mode != "curve" and math.isfinite(reference_doc):
+            point_heading = (
+                "CHECKPOINT"
+                if args.tracking_mode == "checkpoints"
+                else "SAMPLED TRACKING POINT"
+            )
+            print(f"=== {point_heading} ===")
+            print(f"time:                  {applied_time_s:.2f} s")
+            print(f"requested target DoC:  {reference_doc:.4f}")
+            print(f"achieved mean DoC:     {target_doc_mean:.4f}")
+            print(f"minimum target DoC:    {target_doc_min:.4f}")
+            print(f"maximum target DoC:    {target_doc_max:.4f}")
+            print(f"target DoC std:        {target_doc_std:.4f}")
+            print(f"mean error:            {target_doc_mean - reference_doc:+.4f}")
 
     optimization_state = state
     coarse_gif_path: Path | None = None
@@ -988,6 +1505,9 @@ def run_demo(args: argparse.Namespace) -> None:
         save_gif_from_frames(coarse_doc_frame_paths, coarse_gif_path)
 
         native_replay_target_doc: list[float] = []
+        native_replay_target_doc_min: list[float] = []
+        native_replay_target_doc_max: list[float] = []
+        native_replay_target_doc_std: list[float] = []
         native_replay_outside_doc: list[float] = []
 
         def save_native_replay_frame(frame_index: int, doc: torch.Tensor) -> None:
@@ -995,11 +1515,14 @@ def run_demo(args: argparse.Namespace) -> None:
             save_doc_frame(doc, frame_path, config.native_shape)
             native_doc_frame_paths.append(frame_path)
             if frame_index > 0:
-                target_mean, outside_mean = doc_region_metrics(
+                target_summary = doc_region_summary(
                     doc, target_native, args.target_threshold
                 )
-                native_replay_target_doc.append(target_mean)
-                native_replay_outside_doc.append(outside_mean)
+                native_replay_target_doc.append(target_summary["mean_target_doc"])
+                native_replay_target_doc_min.append(target_summary["min_target_doc"])
+                native_replay_target_doc_max.append(target_summary["max_target_doc"])
+                native_replay_target_doc_std.append(target_summary["std_target_doc"])
+                native_replay_outside_doc.append(target_summary["mean_outside_doc"])
 
         native_state = replay_native_controls(
             native_params,
@@ -1013,6 +1536,9 @@ def run_demo(args: argparse.Namespace) -> None:
     else:
         native_state = optimization_state
         native_replay_target_doc = optimization_target_doc
+        native_replay_target_doc_min = optimization_target_doc_min
+        native_replay_target_doc_max = optimization_target_doc_max
+        native_replay_target_doc_std = optimization_target_doc_std
         native_replay_outside_doc = optimization_outside_doc
 
     if len(native_doc_frame_paths) != args.control_steps + 1:
@@ -1035,26 +1561,52 @@ def run_demo(args: argparse.Namespace) -> None:
         args.output_dir / "final_o2_native.png",
     )
 
-    native_target_doc, native_outside_doc = doc_region_metrics(
+    native_target_summary = doc_region_summary(
         native_state.doc, target_native, args.target_threshold
     )
+    native_target_doc = native_target_summary["mean_target_doc"]
+    native_outside_doc = native_target_summary["mean_outside_doc"]
     primary_control_times_s = np.asarray(optimization_control_times_s, dtype=float)
-    primary_reference_doc = np.asarray(
-        doc_reference.at(primary_control_times_s), dtype=float
-    )
+    primary_reference_doc = np.asarray(optimization_reference_doc, dtype=float)
     primary_target_doc = np.asarray(native_replay_target_doc, dtype=float)
+    primary_target_doc_min = np.asarray(native_replay_target_doc_min, dtype=float)
+    primary_target_doc_max = np.asarray(native_replay_target_doc_max, dtype=float)
+    primary_target_doc_std = np.asarray(native_replay_target_doc_std, dtype=float)
+    primary_target_doc_lower_error = primary_target_doc - primary_target_doc_min
+    primary_target_doc_upper_error = primary_target_doc_max - primary_target_doc
     primary_outside_doc = np.asarray(native_replay_outside_doc, dtype=float)
     if not (
         primary_control_times_s.size
         == primary_reference_doc.size
         == primary_target_doc.size
+        == primary_target_doc_min.size
+        == primary_target_doc_max.size
+        == primary_target_doc_std.size
         == primary_outside_doc.size
         == args.control_steps
     ):
         raise AssertionError("primary native tracking timeline has an unexpected length")
     primary_tracking_error = primary_target_doc - primary_reference_doc
-    tracking = temporal_tracking_metrics(primary_target_doc, primary_reference_doc)
-    reference_final_doc = float(doc_reference.at(total_time_s))
+    checkpoint_tracking: dict[str, object] | None = None
+    if args.tracking_mode == "curve":
+        tracking = temporal_tracking_metrics(primary_target_doc, primary_reference_doc)
+        assert doc_reference is not None
+        reference_final_doc = float(doc_reference.at(total_time_s))
+    else:
+        checkpoint_tracking = calculate_checkpoint_tracking(
+            primary_control_times_s,
+            primary_target_doc,
+            primary_target_doc_min,
+            primary_target_doc_max,
+            primary_target_doc_std,
+            checkpoints,
+        )
+        tracking = {
+            "rmse": checkpoint_tracking["rmse"],
+            "mae": checkpoint_tracking["mae"],
+            "max_absolute_error": checkpoint_tracking["max_absolute_error"],
+        }
+        reference_final_doc = float(checkpoints[-1][1])
     final_metrics = calculate_final_metrics(
         native_state.doc.detach().cpu().numpy(),
         target_native.detach().cpu().numpy(),
@@ -1065,14 +1617,42 @@ def run_demo(args: argparse.Namespace) -> None:
     )
     component_metrics_path = args.output_dir / "component_metrics.csv"
     save_component_metrics_csv(final_metrics["component_rows"], component_metrics_path)
-    tracking_plot_path = args.output_dir / "doc_tracking_curve.png"
-    save_tracking_plot(
-        doc_reference,
-        total_time_s,
-        primary_control_times_s,
-        primary_target_doc,
-        tracking_plot_path,
-    )
+    if args.tracking_mode == "curve":
+        tracking_plot_path = args.output_dir / "doc_tracking_curve.png"
+        assert doc_reference is not None
+        save_tracking_plot(
+            doc_reference,
+            total_time_s,
+            primary_control_times_s,
+            primary_target_doc,
+            primary_target_doc_min,
+            primary_target_doc_max,
+            tracking_plot_path,
+        )
+    else:
+        tracking_plot_path = args.output_dir / "doc_checkpoint_tracking.png"
+        assert checkpoint_tracking is not None
+        save_checkpoint_tracking_plot(
+            total_time_s,
+            primary_control_times_s,
+            primary_target_doc,
+            checkpoint_tracking,
+            tracking_plot_path,
+            marker_label=(
+                "sampled fitted-curve requirements"
+                if args.tracking_mode == "sampled-curve"
+                else "explicit target checkpoints"
+            ),
+            title=(
+                "Sparse sampled-curve DoC tracking"
+                if args.tracking_mode == "sampled-curve"
+                else "Checkpoint DoC tracking"
+            ),
+        )
+    tracking_points_csv_path: Path | None = None
+    if checkpoint_tracking is not None:
+        tracking_points_csv_path = args.output_dir / "doc_tracking_points.csv"
+        save_tracking_points_csv(checkpoint_tracking, tracking_points_csv_path)
     components_summary = {
         **final_metrics["components"],
         "table_path": component_metrics_path.name,
@@ -1086,10 +1666,16 @@ def run_demo(args: argparse.Namespace) -> None:
         "primary_result_grid": (
             "native_replay" if config.resolution_mode == "coarse" else "native"
         ),
-        "reference_provenance": doc_reference.provenance_metadata(),
+        "tracking_specification": tracking_specification.provenance_metadata(),
+        "reference_provenance": (
+            None if doc_reference is None else doc_reference.provenance_metadata()
+        ),
         "forward_model_provenance": {
             "source": native_params.reference_model_source,
             "sha256": native_params.reference_model_sha256,
+            "selector": reference.physics_selector_id,
+            "resolved_source_mode": reference.physics_resolution_mode,
+            "value_sources": dict(reference.physics_value_sources),
             "history_mode": DOC_HISTORY_MODE,
             "history_description": DOC_HISTORY_DESCRIPTION,
             "tracking_reference_physics_match": physics_match,
@@ -1101,6 +1687,14 @@ def run_demo(args: argparse.Namespace) -> None:
             "target_threshold": args.target_threshold,
         },
         "total_process_time_s": total_time_s,
+        "final_geometry_reference": {
+            "doc": reference_final_doc,
+            "source": (
+                "selected_curve_at_total_time"
+                if args.tracking_mode == "curve"
+                else "last_sparse_requirement_at_or_before_total_time"
+            ),
+        },
         "control_settings": {
             "dt_s": native_params.dt,
             "physics_steps_per_control": args.physics_steps_per_control,
@@ -1113,7 +1707,40 @@ def run_demo(args: argparse.Namespace) -> None:
             "energy_weight": args.energy_weight,
             "smoothness_weight": args.smoothness_weight,
         },
-        "temporal_tracking": tracking,
+        "target_region_doc_timeline": {
+            "times_s": primary_control_times_s.tolist(),
+            "mean_target_doc": primary_target_doc.tolist(),
+            "min_target_doc": primary_target_doc_min.tolist(),
+            "max_target_doc": primary_target_doc_max.tolist(),
+            "std_target_doc": primary_target_doc_std.tolist(),
+            "lower_error": primary_target_doc_lower_error.tolist(),
+            "upper_error": primary_target_doc_upper_error.tolist(),
+        },
+        "temporal_tracking": tracking if args.tracking_mode == "curve" else None,
+        "sparse_tracking": (
+            None
+            if checkpoint_tracking is None
+            else {
+                "times_s": checkpoint_tracking["times_s"].tolist(),
+                "requested_doc": checkpoint_tracking["requested_doc"].tolist(),
+                "achieved_doc": checkpoint_tracking["achieved_doc"].tolist(),
+                "mean_target_doc": checkpoint_tracking["mean_target_doc"].tolist(),
+                "min_target_doc": checkpoint_tracking["min_target_doc"].tolist(),
+                "max_target_doc": checkpoint_tracking["max_target_doc"].tolist(),
+                "std_target_doc": checkpoint_tracking["std_target_doc"].tolist(),
+                "lower_error": checkpoint_tracking["lower_error"].tolist(),
+                "upper_error": checkpoint_tracking["upper_error"].tolist(),
+                "errors": checkpoint_tracking["errors"].tolist(),
+                "rmse": checkpoint_tracking["rmse"],
+                "mae": checkpoint_tracking["mae"],
+                "max_absolute_error": checkpoint_tracking["max_absolute_error"],
+                "table_path": (
+                    None
+                    if tracking_points_csv_path is None
+                    else tracking_points_csv_path.name
+                ),
+            }
+        ),
         "soft_doc": final_metrics["soft_doc"],
         "geometry": final_metrics["geometry"],
         "boundary": final_metrics["boundary"],
@@ -1154,6 +1781,11 @@ def run_demo(args: argparse.Namespace) -> None:
         "control_times_s": primary_control_times_s,
         "reference_doc_values": primary_reference_doc,
         "actual_mean_target_doc": primary_target_doc,
+        "actual_min_target_doc": primary_target_doc_min,
+        "actual_max_target_doc": primary_target_doc_max,
+        "actual_std_target_doc": primary_target_doc_std,
+        "actual_target_doc_lower_error": primary_target_doc_lower_error,
+        "actual_target_doc_upper_error": primary_target_doc_upper_error,
         "actual_mean_outside_doc": primary_outside_doc,
         "temporal_tracking_errors": primary_tracking_error,
         "temporal_tracking_rmse": np.float64(tracking["rmse"]),
@@ -1161,13 +1793,79 @@ def run_demo(args: argparse.Namespace) -> None:
         "temporal_tracking_max_absolute_error": np.float64(
             tracking["max_absolute_error"]
         ),
-        "doc_reference_metadata_json": np.asarray(
-            json.dumps(doc_reference.provenance_metadata(), sort_keys=True)
+        "tracking_mode": np.asarray(args.tracking_mode),
+        "tracking_spatial_definition": np.asarray(
+            args.tracking_spatial_definition
         ),
-        "doc_reference_source_sha256": np.asarray(doc_reference.source_sha256),
-        "doc_reference_id": np.asarray(doc_reference.reference_id),
+        "tracking_loss": np.asarray(args.tracking_loss),
+        "tracking_specification_json": np.asarray(
+            json.dumps(tracking_specification.provenance_metadata(), sort_keys=True)
+        ),
+        "tracking_point_times_s": np.asarray(
+            tracking_specification.point_times_s, dtype=float
+        ),
+        "tracking_point_requested_doc": np.asarray(
+            tracking_specification.point_values, dtype=float
+        ),
+        "tracking_point_weights": np.asarray(
+            tracking_specification.point_weights
+            or tuple(1.0 for _ in tracking_specification.point_times_s),
+            dtype=float,
+        ),
+        "tracking_point_achieved_doc": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["achieved_doc"],
+            dtype=float,
+        ),
+        "tracking_point_mean_target_doc": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["mean_target_doc"],
+            dtype=float,
+        ),
+        "tracking_point_min_target_doc": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["min_target_doc"],
+            dtype=float,
+        ),
+        "tracking_point_max_target_doc": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["max_target_doc"],
+            dtype=float,
+        ),
+        "tracking_point_std_target_doc": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["std_target_doc"],
+            dtype=float,
+        ),
+        "tracking_point_lower_error": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["lower_error"],
+            dtype=float,
+        ),
+        "tracking_point_upper_error": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["upper_error"],
+            dtype=float,
+        ),
+        "tracking_point_errors": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["errors"],
+            dtype=float,
+        ),
+        "doc_reference_metadata_json": np.asarray(
+            json.dumps(
+                None
+                if doc_reference is None
+                else doc_reference.provenance_metadata(),
+                sort_keys=True,
+            )
+        ),
+        "doc_reference_source_sha256": np.asarray(
+            "" if doc_reference is None else doc_reference.source_sha256
+        ),
+        "doc_reference_id": np.asarray(
+            "" if doc_reference is None else doc_reference.reference_id
+        ),
+        "doc_reference_curve_model": np.asarray(
+            "" if doc_reference is None else doc_reference.curve_model
+        ),
         "doc_reference_condition_json": np.asarray(
-            json.dumps(doc_reference.metadata["condition"], sort_keys=True)
+            json.dumps(
+                None if doc_reference is None else doc_reference.metadata["condition"],
+                sort_keys=True,
+            )
         ),
         "reference_physics_match_json": np.asarray(
             json.dumps(physics_match, sort_keys=True)
@@ -1226,6 +1924,27 @@ def run_demo(args: argparse.Namespace) -> None:
         "final_doc_native": native_state.doc.detach().cpu().numpy(),
         "loss_histories": np.asarray(optimization_histories),
     }
+    if checkpoint_tracking is not None:
+        prefix = "checkpoint" if args.tracking_mode == "checkpoints" else "sampled_curve"
+        common_results.update(
+            {
+                f"{prefix}_times_s": checkpoint_tracking["times_s"],
+                f"{prefix}_requested_doc": checkpoint_tracking["requested_doc"],
+                f"{prefix}_achieved_doc": checkpoint_tracking["achieved_doc"],
+                f"{prefix}_mean_target_doc": checkpoint_tracking["mean_target_doc"],
+                f"{prefix}_min_target_doc": checkpoint_tracking["min_target_doc"],
+                f"{prefix}_max_target_doc": checkpoint_tracking["max_target_doc"],
+                f"{prefix}_std_target_doc": checkpoint_tracking["std_target_doc"],
+                f"{prefix}_lower_error": checkpoint_tracking["lower_error"],
+                f"{prefix}_upper_error": checkpoint_tracking["upper_error"],
+                f"{prefix}_errors": checkpoint_tracking["errors"],
+                f"{prefix}_rmse": np.float64(checkpoint_tracking["rmse"]),
+                f"{prefix}_mae": np.float64(checkpoint_tracking["mae"]),
+                f"{prefix}_max_abs_error": np.float64(
+                    checkpoint_tracking["max_absolute_error"]
+                ),
+            }
+        )
     if config.resolution_mode == "coarse":
         common_results.update(
             {
@@ -1250,11 +1969,18 @@ def run_demo(args: argparse.Namespace) -> None:
     np.savez_compressed(args.output_dir / results_name, **common_results)
 
     print_metrics_summary(
-        reference_id=doc_reference.reference_id,
+        reference_id=(
+            physics_condition if doc_reference is None else doc_reference.reference_id
+        ),
+        tracking_mode=args.tracking_mode,
         total_time_s=total_time_s,
         tracking=tracking,
+        checkpoint_tracking=checkpoint_tracking,
         reference_final_doc=reference_final_doc,
         target_mean_doc=native_target_doc,
+        target_min_doc=native_target_summary["min_target_doc"],
+        target_max_doc=native_target_summary["max_target_doc"],
+        target_std_doc=native_target_summary["std_target_doc"],
         outside_mean_doc=native_outside_doc,
         final_metrics=final_metrics,
     )
@@ -1266,10 +1992,18 @@ def run_demo(args: argparse.Namespace) -> None:
     if config.resolution_mode == "coarse":
         print(
             "native replay "
-            f"DoC(target/out)={native_target_doc:.4f}/{native_outside_doc:.4f}"
+            "DoC(target mean/min/max/std/out)="
+            f"{native_target_doc:.4f}/{native_target_summary['min_target_doc']:.4f}/"
+            f"{native_target_summary['max_target_doc']:.4f}/"
+            f"{native_target_summary['std_target_doc']:.4f}/{native_outside_doc:.4f}"
         )
     else:
-        print(f"native DoC(target/out)={native_target_doc:.4f}/{native_outside_doc:.4f}")
+        print(
+            "native DoC(target mean/min/max/std/out)="
+            f"{native_target_doc:.4f}/{native_target_summary['min_target_doc']:.4f}/"
+            f"{native_target_summary['max_target_doc']:.4f}/"
+            f"{native_target_summary['std_target_doc']:.4f}/{native_outside_doc:.4f}"
+        )
     if coarse_gif_path is not None:
         print(f"saved coarse DoC GIF: {coarse_gif_path.resolve()}")
         print(f"saved native replay DoC GIF: {native_gif_path.resolve()}")
@@ -1277,6 +2011,8 @@ def run_demo(args: argparse.Namespace) -> None:
         print(f"saved native DoC GIF: {native_gif_path.resolve()}")
     print(f"saved tracking plot: {tracking_plot_path.resolve()}")
     print(f"saved component metrics: {component_metrics_path.resolve()}")
+    if tracking_points_csv_path is not None:
+        print(f"saved tracking-point statistics: {tracking_points_csv_path.resolve()}")
     print(f"saved metrics summary: {metrics_path.resolve()}")
     print(f"saved outputs to {args.output_dir.resolve()}")
 
@@ -1395,10 +2131,28 @@ def _reference_architecture_test(device: torch.device) -> dict[str, object]:
                 raise AssertionError(
                     f"{condition.condition_id}.{coefficient} differs from export"
                 )
-    if reference.doc_fit is not None:
-        raise AssertionError(
-            "a/b/c was selected despite no numeric active TEMPO condition"
-        )
+    if reference.tempo_concentration_mM is None:
+        if reference.doc_fit is not None:
+            raise AssertionError(
+                "a/b/c was selected despite no resolved active TEMPO condition"
+            )
+    else:
+        if reference.doc_fit is None:
+            raise AssertionError(
+                "matching collaborator a/b/c provenance was not selected"
+            )
+        if not math.isclose(
+            reference.doc_fit.intensity_mw_cm2,
+            reference.intensity_mw_cm2,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ) or not math.isclose(
+            reference.doc_fit.tempo_concentration_mM,
+            reference.tempo_concentration_mM,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise AssertionError("selected a/b/c provenance does not match active physics")
     if reference.doc_fit_applied_to_governing_law:
         raise AssertionError("B-based reference physics unexpectedly applies a/b/c")
 
@@ -1818,7 +2572,7 @@ def _mpc_optimization_test(device: torch.device) -> tuple[float, float]:
     return initial_loss, final_loss
 
 
-def _doc_reference_curve_test() -> dict[str, object]:
+def _legacy_isotonic_reference_regression_test() -> dict[str, object]:
     """Validate both conditions, raw-tail handling, interpolation, and selection."""
 
     ids = available_doc_reference_ids()
@@ -1935,6 +2689,74 @@ def _doc_reference_curve_test() -> dict[str, object]:
     }
 
 
+def _doc_reference_curve_test() -> dict[str, object]:
+    """Validate schema-v3 model selection and non-destructive schema-v2 support."""
+
+    ids = available_doc_reference_ids(DEFAULT_REFERENCE_PATH)
+    if ids != ("30mW_0mM", "30mW_5mM"):
+        raise AssertionError(f"unexpected DoC reference IDs: {ids}")
+    values_at_5s: dict[str, dict[str, float]] = {}
+    for reference_id in ids:
+        models = available_curve_models(reference_id, DEFAULT_REFERENCE_PATH)
+        if models != CURVE_MODEL_IDS:
+            raise AssertionError(f"incomplete curve-model catalog for {reference_id}: {models}")
+        values_at_5s[reference_id] = {}
+        for model_id in models:
+            reference = load_doc_reference(
+                reference_id, DEFAULT_REFERENCE_PATH, curve_model=model_id
+            )
+            if reference.time_s[0] != 0.0 or reference.time_s[-1] != 20.0:
+                raise AssertionError("DoC reference does not span 0 to 20 s")
+            if not np.isfinite(reference.doc_reference).all():
+                raise AssertionError("DoC reference contains NaN or Inf")
+            if np.any(np.diff(reference.doc_reference) < -1e-10):
+                raise AssertionError(f"{model_id} reference decreases")
+            if float(reference.doc_reference.min()) < 0 or float(reference.doc_reference.max()) > 1:
+                raise AssertionError(f"{model_id} reference left [0,1]")
+            values_at_5s[reference_id][model_id] = float(reference.at(5.0))
+        default_reference = load_doc_reference(reference_id)
+        if default_reference.curve_model != "collaborator_original":
+            raise AssertionError("schema-v3 default is not collaborator_original")
+        p = default_reference.model_parameters
+        assert p is not None
+        expected = 1.0 - p["a"] * np.exp(
+            np.minimum(p["b"] * (p["c"] - default_reference.time_s), 0.0)
+        )
+        np.testing.assert_allclose(
+            default_reference.doc_reference, expected, rtol=0.0, atol=1e-12
+        )
+
+    legacy_hash_before = hashlib.sha256(LEGACY_REFERENCE_PATH.read_bytes()).hexdigest()
+    legacy = load_doc_reference("30mW_0mM", LEGACY_REFERENCE_PATH)
+    if legacy.curve_model != "isotonic" or legacy.metadata["source_schema_version"] != 2:
+        raise AssertionError("schema-v2 runtime migration did not preserve isotonic default")
+    if "collaborator_original" in available_curve_models(
+        "30mW_0mM", LEGACY_REFERENCE_PATH
+    ):
+        raise AssertionError("schema-v2 migration synthesized collaborator coefficients")
+    legacy_hash_after = hashlib.sha256(LEGACY_REFERENCE_PATH.read_bytes()).hexdigest()
+    if legacy_hash_before != legacy_hash_after:
+        raise AssertionError("schema-v2 compatibility rewrote the source artifact")
+    try:
+        load_doc_reference("not_a_condition")
+    except ValueError as error:
+        if "available IDs" not in str(error):
+            raise AssertionError(f"unclear wrong-ID error: {error}") from error
+    else:
+        raise AssertionError("unknown DoC reference ID was accepted")
+    return {
+        "ids": ids,
+        "models": CURVE_MODEL_IDS,
+        "default_model": "collaborator_original",
+        "legacy_default_model": legacy.curve_model,
+        "legacy_sha256": legacy_hash_after,
+        "condition_delta_at_5s": (
+            values_at_5s["30mW_0mM"]["collaborator_original"]
+            - values_at_5s["30mW_5mM"]["collaborator_original"]
+        ),
+    }
+
+
 def _trajectory_tracking_construction_test(device: torch.device) -> dict[str, object]:
     """Validate absolute-time stage references, spatial construction, and gradients."""
 
@@ -1990,6 +2812,153 @@ def _trajectory_tracking_construction_test(device: torch.device) -> dict[str, ob
         "stage_times": stage_times.tolist(),
         "stage_reference": stage_reference.tolist(),
         "gradient_norm": float(controls.grad.norm()),
+    }
+
+
+def _tracking_configuration_matrix_test(device: torch.device) -> dict[str, object]:
+    """Cover all temporal modes, spatial definitions, and target losses."""
+
+    reference = load_doc_reference("30mW_0mM")
+    resolved_times, precedence_warnings = resolve_sampled_tracking_times(
+        explicit_times_s=(1.0, 2.0), count=99, start_s=0.5, end_s=5.0
+    )
+    if resolved_times != (1.0, 2.0) or not precedence_warnings:
+        raise AssertionError("explicit sampled times did not take precedence")
+    try:
+        resolve_sampled_tracking_times(count=3, start_s=None, end_s=2.0)
+    except TrackingConfigurationError:
+        pass
+    else:
+        raise AssertionError("sample count without explicit start/end was accepted")
+    try:
+        TrackingSpecification.sampled_curve(reference, (0.75,)).validate_runtime(
+            0.5, 2.0, 4
+        )
+    except TrackingConfigurationError:
+        pass
+    else:
+        raise AssertionError("non-grid-aligned sampled time was accepted")
+    line = TrackingSpecification.checkpoints(((3.5, 0.4), (6.0, 0.9)))
+    rect = TrackingSpecification.checkpoints(((3.5, 0.4), (9.0, 0.9)))
+    if line.validate_runtime(0.5, 6.0, 8):
+        raise AssertionError("H8 should cover the Sync_line checkpoint gap")
+    if not rect.validate_runtime(0.5, 9.0, 8):
+        raise AssertionError("H8 did not warn for the Sync_rect checkpoint gap")
+    if rect.validate_runtime(0.5, 9.0, 12):
+        raise AssertionError("H12 should cover the Sync_rect checkpoint gap")
+    schedule = line.stage_schedule(3.0, 0.5, 8)
+    active_times = schedule.times_s[schedule.active]
+    np.testing.assert_allclose(active_times, [3.5, 6.0], rtol=0.0, atol=1e-12)
+    if int(schedule.active.sum()) != 2:
+        raise AssertionError("checkpoint mode generated intermediate target references")
+    weighted = TrackingSpecification.checkpoints(
+        ((3.5, 0.4), (6.0, 0.9)), point_weights=(2.0, 0.5)
+    )
+    weighted_schedule = weighted.stage_schedule(3.0, 0.5, 8)
+    np.testing.assert_allclose(
+        weighted_schedule.point_weights[weighted_schedule.active],
+        [2.0, 0.5],
+        rtol=0.0,
+        atol=0.0,
+    )
+    try:
+        TrackingSpecification(
+            tracking_mode="checkpoints",
+            reference_curve=reference,
+            point_times_s=(0.5,),
+            point_values=(0.4,),
+        )
+    except TrackingConfigurationError:
+        pass
+    else:
+        raise AssertionError("checkpoint plus curve reference was accepted")
+
+    params = replace(AIEParameters.from_reference(), o2_inhibition_mj_cm2=0.0)
+    model = AIEModel(params, device=device)
+    size = model.scattering_kernel_size // 2 + 3
+    target = torch.ones((size, size), device=device)
+    configurations = 0
+    gradient_norms: list[float] = []
+    for temporal_mode in TRACKING_MODES:
+        for spatial_definition in SPATIAL_DEFINITIONS:
+            for loss_name in TRACKING_LOSSES:
+                common = {
+                    "spatial_definition": spatial_definition,
+                    "tracking_loss": loss_name,
+                    "huber_delta": 0.1,
+                }
+                if temporal_mode == "curve":
+                    specification = TrackingSpecification.curve(reference, **common)
+                elif temporal_mode == "sampled-curve":
+                    specification = TrackingSpecification.sampled_curve(
+                        reference, (0.5, 1.0), **common
+                    )
+                else:
+                    specification = TrackingSpecification.checkpoints(
+                        ((0.5, 0.3), (1.0, 0.6)), **common
+                    )
+                controller = DifferentiableMPC(
+                    model=model,
+                    target=target,
+                    tracking_specification=specification,
+                    horizon=2,
+                    physics_steps_per_control=10,
+                    outside_weight=0.0,
+                    energy_weight=0.0,
+                    smoothness_weight=0.0,
+                    num_iterations=1,
+                )
+                controls = torch.full(
+                    (2, *controller.control_shape),
+                    0.5,
+                    device=device,
+                    requires_grad=True,
+                )
+                states = controller.predict_stages(
+                    model.initialize_state(target.shape), controls
+                )
+                loss, components = controller.cost(
+                    states, controls, current_process_time_s=0.0
+                )
+                if not bool(torch.isfinite(loss)) or not bool(
+                    torch.isfinite(components["target"])
+                ):
+                    raise AssertionError("tracking matrix produced a non-finite loss")
+                loss.backward()
+                if controls.grad is None or not bool(torch.isfinite(controls.grad).all()):
+                    raise AssertionError("tracking matrix produced a non-finite gradient")
+                gradient_norms.append(float(controls.grad.norm()))
+                configurations += 1
+    if min(gradient_norms) <= 0:
+        raise AssertionError("a tracking configuration produced a zero gradient")
+
+    checkpoint_controller = DifferentiableMPC(
+        model=model,
+        target=target,
+        tracking_specification=TrackingSpecification.checkpoints(
+            ((0.5, 0.4), (1.0, 0.8))
+        ),
+        horizon=2,
+        physics_steps_per_control=10,
+        outside_weight=0.0,
+        energy_weight=0.0,
+        smoothness_weight=0.0,
+        num_iterations=6,
+        learning_rate=0.3,
+    )
+    _, checkpoint_info = checkpoint_controller.optimize(
+        model.initialize_state(target.shape),
+        initial_guess=torch.full((2, size, size), 0.2, device=device),
+        current_process_time_s=0.0,
+    )
+    if not checkpoint_info["final_loss"] < checkpoint_info["initial_loss"]:
+        raise AssertionError("tiny checkpoint MPC optimization did not reduce loss")
+    return {
+        "configurations": configurations,
+        "minimum_gradient_norm": min(gradient_norms),
+        "checkpoint_initial_loss": checkpoint_info["initial_loss"],
+        "checkpoint_final_loss": checkpoint_info["final_loss"],
+        "h8_rect_warning": rect.validate_runtime(0.5, 9.0, 8)[0],
     }
 
 
@@ -2398,13 +3367,13 @@ def run_smoke_tests() -> None:
     )
     doc_reference_results = _doc_reference_curve_test()
     print(
-        "[pass] DoC references loader/schema/conditions/monotonic/saturation/"
-        "interpolation/raw-tail exclusion/equal-replicate isotonic production; "
+        "[pass] DoC schema-v3 model catalog and non-destructive schema-v2 migration; "
         f"ids={doc_reference_results['ids']} "
-        f"samples={doc_reference_results['samples']} "
-        f"final={doc_reference_results['final_doc']:.6f} "
+        f"models={doc_reference_results['models']} "
+        f"default={doc_reference_results['default_model']} "
+        f"legacy_default={doc_reference_results['legacy_default_model']} "
         f"delta_at_5s={doc_reference_results['condition_delta_at_5s']:.6f} "
-        f"blocks={doc_reference_results['block_counts']}"
+        f"legacy_sha256={doc_reference_results['legacy_sha256']}"
     )
     condition_physics = _reference_physics_condition_test()
     print(
@@ -2447,6 +3416,16 @@ def run_smoke_tests() -> None:
         f"{tracking_construction['stage_times'][0]:.1f}-"
         f"{tracking_construction['stage_times'][-1]:.1f}s; "
         f"tracking gradient norm={tracking_construction['gradient_norm']:.3e}"
+    )
+    tracking_matrix = _tracking_configuration_matrix_test(device)
+    print(
+        "[pass] tracking matrix "
+        f"{tracking_matrix['configurations']} mode/spatial/loss combinations; "
+        f"minimum gradient={tracking_matrix['minimum_gradient_norm']:.3e}; "
+        "tiny checkpoint loss "
+        f"{tracking_matrix['checkpoint_initial_loss']:.3e}->"
+        f"{tracking_matrix['checkpoint_final_loss']:.3e}; "
+        f"H8 warning={tracking_matrix['h8_rect_warning']}"
     )
     quantitative = _quantitative_metrics_test()
     print(
@@ -2537,10 +3516,79 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--tracking-mode",
+        choices=TRACKING_MODES,
+        default="curve",
+        help=(
+            "target-side time specification: dense fitted curve (default), "
+            "sparse samples from a selected curve, or direct checkpoints"
+        ),
+    )
+    parser.add_argument(
+        "--physics-condition",
+        choices=SUPPORTED_FORWARD_CONDITIONS,
+        default="active",
+        help=(
+            "authoritative forward-physics selector, independent of the DoC "
+            "tracking reference (default: exact active collaborator source state)"
+        ),
+    )
+    parser.add_argument(
         "--doc-reference",
-        choices=tuple(EXPECTED_CONDITIONS),
-        default="30mW_0mM",
-        help="experimental time-domain DoC tracking reference ID",
+        choices=("30mW_0mM", "30mW_5mM"),
+        default=None,
+        help=(
+            "experimental curve condition ID; curve modes default to 30mW_0mM, "
+            "checkpoint mode must not use this option"
+        ),
+    )
+    parser.add_argument(
+        "--reference-artifact",
+        type=Path,
+        default=DEFAULT_REFERENCE_PATH,
+        help="schema-v2 or schema-v3 DoC reference artifact",
+    )
+    parser.add_argument(
+        "--curve-model",
+        choices=CURVE_MODEL_IDS,
+        default="collaborator_original",
+        help="curve model used by curve/sample-curve modes (default: collaborator_original)",
+    )
+    parser.add_argument(
+        "--tracking-times",
+        default=None,
+        help="sampled-curve absolute times in seconds, comma separated",
+    )
+    parser.add_argument("--num-tracking-points", type=int, default=None)
+    parser.add_argument("--tracking-start", type=float, default=None)
+    parser.add_argument("--tracking-end", type=float, default=None)
+    parser.add_argument(
+        "--checkpoints",
+        default=None,
+        help="direct collaborator requirements as time:DoC,time:DoC,...",
+    )
+    parser.add_argument(
+        "--tracking-spatial-definition",
+        choices=SPATIAL_DEFINITIONS,
+        default="pixelwise",
+        help="pixelwise spatial tracking (current default) or target-region mean",
+    )
+    parser.add_argument(
+        "--tracking-loss",
+        choices=TRACKING_LOSSES,
+        default="mse",
+        help="target tracking loss only; other controller penalties are unchanged",
+    )
+    parser.add_argument(
+        "--huber-delta",
+        type=float,
+        default=0.1,
+        help="Huber transition delta when --tracking-loss huber",
+    )
+    parser.add_argument(
+        "--point-weights",
+        default=None,
+        help="optional positive comma-separated sparse-point weights (default: equal)",
     )
     parser.add_argument(
         "--allow-reference-physics-mismatch",
