@@ -40,6 +40,13 @@ from aie_model import (
     AIEState,
 )
 from aie_mpc import DifferentiableMPC
+from aie_mpc_initialization import (
+    DEFAULT_PHYSICS_INIT_ITERATIONS,
+    DEFAULT_PHYSICS_INIT_LEARNING_RATE,
+    DEFAULT_PHYSICS_INIT_OUTSIDE_WEIGHT,
+    PhysicsAwareInitializationResult,
+    build_physics_aware_initial_mask,
+)
 import aie_reference
 from aie_reference import (
     SUPPORTED_FORWARD_CONDITIONS,
@@ -70,6 +77,7 @@ from tracking_config import (
 from mpc_metrics import (
     GEOMETRY_THRESHOLD_NOTE,
     calculate_final_metrics,
+    initializer_component_metrics,
     temporal_tracking_metrics,
 )
 
@@ -553,6 +561,36 @@ def doc_region_summary(
     }
 
 
+def normalized_field_region_summary(
+    field: torch.Tensor,
+    target: torch.Tensor,
+    target_threshold: float,
+    *,
+    label: str,
+) -> dict[str, float]:
+    """Summarize a normalized initialization field on target and background."""
+
+    if tuple(field.shape) != tuple(target.shape):
+        raise ValueError(
+            f"{label} shape {tuple(field.shape)} does not match target shape "
+            f"{tuple(target.shape)}"
+        )
+    target_region = target > target_threshold
+    if not bool(target_region.any()):
+        raise ValueError("target has no pixels above target_threshold")
+    outside_region = ~target_region
+    target_values = field[target_region]
+    outside_mean = (
+        float(field[outside_region].mean()) if bool(outside_region.any()) else 0.0
+    )
+    return {
+        "target_mean": float(target_values.mean()),
+        "target_min": float(target_values.min()),
+        "target_max": float(target_values.max()),
+        "outside_mean": outside_mean,
+    }
+
+
 def resolve_control_timing(
     *, total_time_s: float | None, control_steps: int | None, control_dt_s: float
 ) -> tuple[int, float]:
@@ -821,6 +859,25 @@ def save_component_metrics_csv(rows: list[dict[str, object]], path: Path) -> Non
         "p05_final_doc",
         "cured_fraction",
         "undercure_fraction",
+    )
+    with path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def save_initializer_component_metrics_csv(
+    rows: list[dict[str, object]], path: Path
+) -> None:
+    """Save component-wise cold-start optics for diagnostics only."""
+
+    columns = (
+        "component_id",
+        "pixel_count",
+        "projector_mask_mean",
+        "local_normalized_intensity_mean",
+        "local_normalized_intensity_min",
+        "local_normalized_intensity_max",
     )
     with path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=columns)
@@ -1331,15 +1388,190 @@ def run_demo(args: argparse.Namespace) -> None:
         num_iterations=args.iterations,
         learning_rate=args.learning_rate,
     )
-    guess = controller.initial_control_sequence(
-        target_level=args.initial_target_level,
-        background_level=args.initial_background_level,
-    )
+    physics_initialization: PhysicsAwareInitializationResult | None = None
+    initial_guess_projector_native: torch.Tensor | None = None
+    initial_guess_local_intensity_native: torch.Tensor | None = None
+    initializer_component_rows: list[dict[str, object]] = []
+    if args.initialization_mode == "uniform":
+        # Preserve the historical cold start exactly.
+        guess = controller.initial_control_sequence(
+            target_level=args.initial_target_level,
+            background_level=args.initial_background_level,
+        )
+        initialization_metadata: dict[str, object] = {
+            "mode": "uniform",
+            "heuristic_only": False,
+            "initial_target_level": args.initial_target_level,
+            "initial_background_level": args.initial_background_level,
+        }
+        print("initialization_mode=uniform")
+    else:
+        if not tracking_specification.point_times_s:
+            raise TrackingConfigurationError(
+                "physics-aware initialization requires an explicit checkpoint or "
+                "sampled-curve target time; dense curve mode has no single cold-start "
+                "checkpoint. Use --initialization-mode uniform or provide sparse "
+                "tracking requirements."
+            )
+        initialization_checkpoint_time = tracking_specification.point_times_s[0]
+        initialization_checkpoint_doc = tracking_specification.point_values[0]
+        physics_initialization = build_physics_aware_initial_mask(
+            model=model,
+            target=optimization_target,
+            target_threshold=args.target_threshold,
+            checkpoint_time_s=initialization_checkpoint_time,
+            checkpoint_doc=initialization_checkpoint_doc,
+            background_level=args.initial_background_level,
+            num_iterations=args.physics_init_iterations,
+            learning_rate=args.physics_init_lr,
+            outside_weight=args.physics_init_outside_weight,
+        )
+        # The precompensated mask is repeated only for the first MPC solve.  All
+        # later solves retain the normal shifted optimized-horizon warm start.
+        guess = physics_initialization.projector_mask.unsqueeze(0).repeat(
+            args.horizon, 1, 1
+        )
+        initial_guess_projector_native = recover_control_to_native(
+            physics_initialization.projector_mask, config
+        ).detach().clone()
+        if config.resolution_mode == "native":
+            initial_guess_local_intensity_native = (
+                physics_initialization.local_normalized_intensity.detach().clone()
+            )
+        else:
+            native_optical_model = AIEModel(native_params, device=device)
+            with torch.no_grad():
+                native_prepared = native_optical_model.prepare_control(
+                    initial_guess_projector_native, config.native_shape
+                )
+                initial_guess_local_intensity_native = (
+                    native_prepared.local_intensity
+                    / native_optical_model.params.intensity_mw_cm2
+                ).detach().clone()
+
+        projector_summary = normalized_field_region_summary(
+            initial_guess_projector_native,
+            target_native,
+            args.target_threshold,
+            label="physics-aware native projector mask",
+        )
+        local_summary = normalized_field_region_summary(
+            initial_guess_local_intensity_native,
+            target_native,
+            args.target_threshold,
+            label="physics-aware native local normalized intensity",
+        )
+        initializer_component_rows = initializer_component_metrics(
+            (target_native > args.target_threshold).detach().cpu().numpy(),
+            initial_guess_projector_native.detach().cpu().numpy(),
+            initial_guess_local_intensity_native.detach().cpu().numpy(),
+        )
+        initialization_metadata = {
+            "mode": "physics-aware",
+            "heuristic_only": True,
+            "heuristic_scope": (
+                "first MPC solve cold start only; AIE forward physics and MPC "
+                "objective are unchanged"
+            ),
+            "checkpoint_selection": "earliest explicit target requirement",
+            "checkpoint_time_s": initialization_checkpoint_time,
+            "checkpoint_doc": initialization_checkpoint_doc,
+            "nominal_intensity_mw_cm2": (
+                physics_initialization.nominal.intensity_mw_cm2
+            ),
+            "nominal_normalized_level": (
+                physics_initialization.nominal.normalized_level
+            ),
+            "nominal_predicted_doc": physics_initialization.nominal.predicted_doc,
+            "nominal_maximum_achievable_doc": (
+                physics_initialization.nominal.maximum_achievable_doc
+            ),
+            "nominal_solver": {
+                "method": "bounded_monotone_bisection",
+                "iterations": physics_initialization.nominal.bisection_iterations,
+                "model": "O2-only constant-local-intensity approximation",
+                "b_law_source": "active AIEModel.params affine B/intensity law",
+            },
+            "optical_initializer": {
+                "method": "Adam on sigmoid-bounded projector logits",
+                "iterations": physics_initialization.optical_iterations,
+                "learning_rate": physics_initialization.optical_learning_rate,
+                "outside_weight": physics_initialization.optical_outside_weight,
+                "initial_loss": physics_initialization.initial_optical_loss,
+                "final_loss": physics_initialization.final_optical_loss,
+                "operator": "AIEModel.prepare_control",
+                "initial_target_level_argument": "unused",
+                "initial_background_level_seed": args.initial_background_level,
+            },
+            "projector_mask_native": projector_summary,
+            "local_normalized_intensity_native": local_summary,
+            "component_count": len(initializer_component_rows),
+            "component_metrics": initializer_component_rows,
+            "component_metrics_path": "initial_guess_component_metrics.csv",
+        }
+        print("initialization_mode=physics-aware")
+        print(
+            f"initialization_checkpoint_time={initialization_checkpoint_time:g} s"
+        )
+        print(f"initialization_checkpoint_doc={initialization_checkpoint_doc:g}")
+        print(
+            "physics_aware_nominal_intensity="
+            f"{physics_initialization.nominal.intensity_mw_cm2:.8g} mW/cm^2"
+        )
+        print(
+            "physics_aware_nominal_normalized_level="
+            f"{physics_initialization.nominal.normalized_level:.8g}"
+        )
+        print(
+            "physics_aware_mask target mean/min/max="
+            f"{projector_summary['target_mean']:.6f}/"
+            f"{projector_summary['target_min']:.6f}/"
+            f"{projector_summary['target_max']:.6f}"
+        )
+        print(
+            "physics_aware_optical_field target mean/min/max="
+            f"{local_summary['target_mean']:.6f}/"
+            f"{local_summary['target_min']:.6f}/"
+            f"{local_summary['target_max']:.6f}"
+        )
+        print(
+            "physics_aware_optical_field outside mean="
+            f"{local_summary['outside_mean']:.6f}"
+        )
+        print(
+            "physics_aware_initializer_components="
+            f"{len(initializer_component_rows)} "
+            "(details: initial_guess_component_metrics.csv)"
+        )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     save_grayscale(target_native, args.output_dir / "target_native.png")
     if config.resolution_mode == "coarse":
         save_grayscale(optimization_target, args.output_dir / "target_coarse.png")
+    if physics_initialization is not None:
+        assert initial_guess_projector_native is not None
+        assert initial_guess_local_intensity_native is not None
+        save_grayscale(
+            initial_guess_projector_native,
+            args.output_dir / "initial_guess_projector_native.png",
+        )
+        save_grayscale(
+            initial_guess_local_intensity_native,
+            args.output_dir / "initial_guess_local_intensity_native.png",
+        )
+        if config.resolution_mode == "coarse":
+            save_grayscale(
+                physics_initialization.projector_mask,
+                args.output_dir / "initial_guess_projector_coarse.png",
+            )
+            save_grayscale(
+                physics_initialization.local_normalized_intensity,
+                args.output_dir / "initial_guess_local_intensity_coarse.png",
+            )
+        save_initializer_component_metrics_csv(
+            initializer_component_rows,
+            args.output_dir / "initial_guess_component_metrics.csv",
+        )
 
     applied_controls_optimization: list[torch.Tensor] = []
     applied_controls_native: list[torch.Tensor] = []
@@ -1686,6 +1918,7 @@ def run_demo(args: argparse.Namespace) -> None:
             "shape": list(config.native_shape),
             "target_threshold": args.target_threshold,
         },
+        "initialization": initialization_metadata,
         "total_process_time_s": total_time_s,
         "final_geometry_reference": {
             "doc": reference_final_doc,
@@ -1871,6 +2104,9 @@ def run_demo(args: argparse.Namespace) -> None:
             json.dumps(physics_match, sort_keys=True)
         ),
         "metrics_json": np.asarray(json.dumps(metrics_document, sort_keys=True)),
+        "initialization_json": np.asarray(
+            json.dumps(initialization_metadata, sort_keys=True)
+        ),
         "component_metrics_json": np.asarray(
             json.dumps(final_metrics["component_rows"], sort_keys=True)
         ),
@@ -1924,6 +2160,22 @@ def run_demo(args: argparse.Namespace) -> None:
         "final_doc_native": native_state.doc.detach().cpu().numpy(),
         "loss_histories": np.asarray(optimization_histories),
     }
+    if physics_initialization is not None:
+        assert initial_guess_projector_native is not None
+        assert initial_guess_local_intensity_native is not None
+        common_results.update(
+            {
+                "initial_guess_projector_native": (
+                    initial_guess_projector_native.detach().cpu().numpy()
+                ),
+                "initial_guess_local_normalized_intensity_native": (
+                    initial_guess_local_intensity_native.detach().cpu().numpy()
+                ),
+                "initial_guess_component_metrics_json": np.asarray(
+                    json.dumps(initializer_component_rows, sort_keys=True)
+                ),
+            }
+        )
     if checkpoint_tracking is not None:
         prefix = "checkpoint" if args.tracking_mode == "checkpoints" else "sampled_curve"
         common_results.update(
@@ -3602,8 +3854,51 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outside-weight", type=float, default=0.5)
     parser.add_argument("--energy-weight", type=float, default=1e-4)
     parser.add_argument("--smoothness-weight", type=float, default=1e-2)
-    parser.add_argument("--initial-target-level", type=float, default=0.95)
-    parser.add_argument("--initial-background-level", type=float, default=0.02)
+    parser.add_argument(
+        "--initialization-mode",
+        choices=("uniform", "physics-aware"),
+        default="uniform",
+        help=(
+            "first-solve cold start: historical target-shaped levels (uniform, "
+            "default) or checkpoint/optics-derived precompensation (physics-aware)"
+        ),
+    )
+    parser.add_argument(
+        "--initial-target-level",
+        type=float,
+        default=0.95,
+        help=(
+            "target level for uniform initialization only; unused in "
+            "physics-aware mode"
+        ),
+    )
+    parser.add_argument(
+        "--initial-background-level",
+        type=float,
+        default=0.02,
+        help=(
+            "background level for uniform initialization and starting seed for "
+            "physics-aware optical inversion"
+        ),
+    )
+    parser.add_argument(
+        "--physics-init-iterations",
+        type=int,
+        default=DEFAULT_PHYSICS_INIT_ITERATIONS,
+        help="lightweight optical-only precompensation iterations",
+    )
+    parser.add_argument(
+        "--physics-init-lr",
+        type=float,
+        default=DEFAULT_PHYSICS_INIT_LEARNING_RATE,
+        help="Adam learning rate for optical-only precompensation",
+    )
+    parser.add_argument(
+        "--physics-init-outside-weight",
+        type=float,
+        default=DEFAULT_PHYSICS_INIT_OUTSIDE_WEIGHT,
+        help="outside-field penalty weight for optical-only precompensation",
+    )
     parser.add_argument(
         "--smoke-test",
         action="store_true",

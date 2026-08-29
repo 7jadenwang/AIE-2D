@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "primary_result_grid": "native",
+  "tracking_specification": {
+    "tracking_mode": "checkpoints",
+    "tracking_reference_type": "explicit_checkpoints",
+    "tracking_reference_source": "collaborator_specification",
+    "tracking_times_s": [
+      6.0
+    ],
+    "tracking_values": [
+      0.9
+    ],
+    "point_weights": [
+      1.0
+    ],
+    "point_weighting": "equal",
+    "target_tracking_stage_policy": "only_exact_configured_absolute_times",
+    "non_target_penalty_stage_policy": "all_prediction_stages",
+    "spatial_definition": "pixelwise",
+    "tracking_loss": "mse",
+    "huber_delta": null,
+    "curve_reference": null
+  },
+  "reference_provenance": null,
+  "forward_model_provenance": {
+    "source": "AIE_TEMPOv1.1.py",
+    "sha256": "26caf647383450419831a2d0cf6bf40b154b912a73732dd6d6e49c7bd1a5bd2c",
+    "selector": "70mW_0mM",
+    "resolved_source_mode": "active_authoritative",
+    "value_sources": {
+      "intensity": "active assignment",
+      "o2_inhibition": "active assignment",
+      "total_inhibition": "active assignment",
+      "tempo_inhibition": "derived from active assignments",
+      "b_law": "active expression",
+      "dt": "active assignment",
+      "pixel_pitch": "active assignment",
+      "o2_diffusivity": "active assignment",
+      "tempo_diffusivity": "active assignment",
+      "scattering": "active assignment"
+    },
+    "history_mode": "incremental_reaction_progress_v1",
+    "history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+    "tracking_reference_physics_match": {
+      "matched": true,
+      "tracking_reference_type": "explicit_checkpoints",
+      "tracking_reference_source": "collaborator_specification",
+      "forward_condition_id": "70mW_0mM",
+      "forward_intensity_mw_cm2": 70.0,
+      "forward_tempo_concentration_mM": 0.0,
+      "override_used": false
+    }
+  },
+  "target": {
+    "name": "Sync_line.png",
+    "path": "C:\\uSLS\\AIE-2D-David\\GEO\\Sync_line.png",
+    "shape": [
+      320,
+      512
+    ],
+    "target_threshold": 0.5
+  },
+  "total_process_time_s": 6.0,
+  "final_geometry_reference": {
+    "doc": 0.9,
+    "source": "last_sparse_requirement_at_or_before_total_time"
+  },
+  "control_settings": {
+    "dt_s": 0.05,
+    "physics_steps_per_control": 10,
+    "control_dt_s": 0.5,
+    "control_steps": 12,
+    "horizon": 12,
+    "prediction_horizon_seconds": 6.0,
+    "target_weight": 1.0,
+    "outside_weight": 0.5,
+    "energy_weight": 0.0001,
+    "smoothness_weight": 0.01
+  },
+  "target_region_doc_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "mean_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.020526845008134842,
+      0.1469687819480896,
+      0.3553227186203003,
+      0.5273132920265198,
+      0.6533123254776001,
+      0.7442061901092529,
+      0.8100653290748596,
+      0.858155369758606,
+      0.8935098648071289
+    ],
+    "min_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.19774407148361206,
+      0.3915039300918579,
+      0.5317636728286743,
+      0.6389487385749817,
+      0.7212345600128174,
+      0.7846755385398865,
+      0.8340494632720947,
+      0.8727658987045288,
+      0.9094438552856445
+    ],
+    "std_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.04271227866411209,
+      0.11066437512636185,
+      0.10609432309865952,
+      0.07596177607774734,
+      0.06456709653139114,
+      0.06548291444778442,
+      0.06935584545135498,
+      0.07306437939405441,
+      0.07601834088563919
+    ],
+    "lower_error": [
+      0.0,
+      0.0,
+      0.0,
+      0.020526845008134842,
+      0.1469687819480896,
+      0.3553227186203003,
+      0.5273132920265198,
+      0.6533123254776001,
+      0.7442061901092529,
+      0.8100653290748596,
+      0.858155369758606,
+      0.8935098648071289
+    ],
+    "upper_error": [
+      0.0,
+      0.0,
+      0.0,
+      0.17721722647547722,
+      0.2445351481437683,
+      0.17644095420837402,
+      0.11163544654846191,
+      0.06792223453521729,
+      0.040469348430633545,
+      0.023984134197235107,
+      0.014610528945922852,
+      0.015933990478515625
+    ]
+  },
+  "temporal_tracking": null,
+  "sparse_tracking": {
+    "times_s": [
+      6.0
+    ],
+    "requested_doc": [
+      0.9
+    ],
+    "achieved_doc": [
+      0.8935098648071289
+    ],
+    "mean_target_doc": [
+      0.8935098648071289
+    ],
+    "min_target_doc": [
+      0.0
+    ],
+    "max_target_doc": [
+      0.9094438552856445
+    ],
+    "std_target_doc": [
+      0.07601834088563919
+    ],
+    "lower_error": [
+      0.8935098648071289
+    ],
+    "upper_error": [
+      0.015933990478515625
+    ],
+    "errors": [
+      -0.006490135192871116
+    ],
+    "rmse": 0.006490135192871116,
+    "mae": 0.006490135192871116,
+    "max_absolute_error": 0.006490135192871116,
+    "table_path": "doc_tracking_points.csv"
+  },
+  "soft_doc": {
+    "full_image_rmse": 0.038706256091158395,
+    "target_region_rmse": 0.07629488766638305,
+    "outside_region_rmse": 0.00019743543983730827,
+    "full_image_mae": 0.0017615027598367327
+  },
+  "geometry": {
+    "threshold": 0.5,
+    "threshold_interpretation": "Computational segmentation threshold only; not claimed as an experimentally calibrated gel-point threshold.",
+    "target_threshold": 0.5,
+    "iou": 0.9928144564598748,
+    "dice": 0.9963942736781979,
+    "precision": 1.0,
+    "recall": 0.9928144564598748,
+    "undercure_fraction": 0.007185543540125214,
+    "overcure_fraction_target_normalized": 0.0,
+    "overcure_fraction_image": 0.0,
+    "area_error_fraction": -0.007185543540125214,
+    "pixel_counts": {
+      "image_area": 163840,
+      "target_area": 42168,
+      "cured_area": 41865,
+      "true_positive": 41865,
+      "false_positive": 0,
+      "false_negative": 303
+    }
+  },
+  "boundary": {
+    "status": "ok",
+    "mean_symmetric_distance_px": 1.5051770013012684,
+    "mean_symmetric_distance_um": 11.43934520988964,
+    "p95_symmetric_distance_px": 0.0,
+    "p95_symmetric_distance_um": 0.0
+  },
+  "components": {
+    "count": 17,
+    "component_mean_doc_mean": 0.7940669610807497,
+    "component_mean_doc_min": 0.0,
+    "component_mean_doc_max": 0.8999846709731619,
+    "worst_mean_doc": 0.0,
+    "worst_mean_doc_component_id": 1,
+    "worst_cured_fraction": 0.0,
+    "worst_cured_fraction_component_id": 1,
+    "worst_undercure_fraction": 1.0,
+    "worst_undercure_component_id": 1,
+    "table_path": "component_metrics.csv"
+  },
+  "holes": {
+    "count": 0,
+    "total_hole_pixels": 0,
+    "cured_fraction": 0.0,
+    "mean_doc": 0.0,
+    "p95_doc": 0.0,
+    "max_doc": 0.0,
+    "details": []
+  }
+}

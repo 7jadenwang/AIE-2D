@@ -222,6 +222,57 @@ def component_metrics(
     }, rows
 
 
+def initializer_component_metrics(
+    target_binary: Any,
+    projector_mask: Any,
+    local_normalized_intensity: Any,
+) -> list[dict[str, Any]]:
+    """Report cold-start optical delivery by target component.
+
+    Component labels are diagnostic only.  They are never used to construct or
+    optimize the physics-aware initialization mask.
+    """
+
+    target_binary = _as_2d(target_binary, "target_binary").astype(
+        bool, copy=False
+    )
+    projector_mask = _as_2d(projector_mask, "projector_mask").astype(
+        float, copy=False
+    )
+    local_normalized_intensity = _as_2d(
+        local_normalized_intensity, "local_normalized_intensity"
+    ).astype(float, copy=False)
+    if (
+        target_binary.shape != projector_mask.shape
+        or target_binary.shape != local_normalized_intensity.shape
+    ):
+        raise ValueError("initializer component inputs must have the same shape")
+    if not np.isfinite(projector_mask).all() or not np.isfinite(
+        local_normalized_intensity
+    ).all():
+        raise ValueError("initializer component fields contain NaN or Inf")
+
+    labels, count = ndimage.label(
+        target_binary, structure=np.ones((3, 3), dtype=int)
+    )
+    rows: list[dict[str, Any]] = []
+    for component_id in range(1, count + 1):
+        region = labels == component_id
+        projector_values = projector_mask[region]
+        local_values = local_normalized_intensity[region]
+        rows.append(
+            {
+                "component_id": component_id,
+                "pixel_count": int(np.count_nonzero(region)),
+                "projector_mask_mean": float(np.mean(projector_values)),
+                "local_normalized_intensity_mean": float(np.mean(local_values)),
+                "local_normalized_intensity_min": float(np.min(local_values)),
+                "local_normalized_intensity_max": float(np.max(local_values)),
+            }
+        )
+    return rows
+
+
 def hole_metrics(
     target_binary: Any, final_doc: Any, cured_binary: Any
 ) -> tuple[dict[str, Any], list[dict[str, Any]], np.ndarray]:

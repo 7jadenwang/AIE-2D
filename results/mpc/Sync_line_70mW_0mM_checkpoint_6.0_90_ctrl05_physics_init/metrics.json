@@ -1,0 +1,455 @@
+{
+  "schema_version": 1,
+  "primary_result_grid": "native",
+  "tracking_specification": {
+    "tracking_mode": "checkpoints",
+    "tracking_reference_type": "explicit_checkpoints",
+    "tracking_reference_source": "collaborator_specification",
+    "tracking_times_s": [
+      6.0
+    ],
+    "tracking_values": [
+      0.9
+    ],
+    "point_weights": [
+      1.0
+    ],
+    "point_weighting": "equal",
+    "target_tracking_stage_policy": "only_exact_configured_absolute_times",
+    "non_target_penalty_stage_policy": "all_prediction_stages",
+    "spatial_definition": "pixelwise",
+    "tracking_loss": "mse",
+    "huber_delta": null,
+    "curve_reference": null
+  },
+  "reference_provenance": null,
+  "forward_model_provenance": {
+    "source": "AIE_TEMPOv1.1.py",
+    "sha256": "26caf647383450419831a2d0cf6bf40b154b912a73732dd6d6e49c7bd1a5bd2c",
+    "selector": "70mW_0mM",
+    "resolved_source_mode": "active_authoritative",
+    "value_sources": {
+      "intensity": "active assignment",
+      "o2_inhibition": "active assignment",
+      "total_inhibition": "active assignment",
+      "tempo_inhibition": "derived from active assignments",
+      "b_law": "active expression",
+      "dt": "active assignment",
+      "pixel_pitch": "active assignment",
+      "o2_diffusivity": "active assignment",
+      "tempo_diffusivity": "active assignment",
+      "scattering": "active assignment"
+    },
+    "history_mode": "incremental_reaction_progress_v1",
+    "history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+    "tracking_reference_physics_match": {
+      "matched": true,
+      "tracking_reference_type": "explicit_checkpoints",
+      "tracking_reference_source": "collaborator_specification",
+      "forward_condition_id": "70mW_0mM",
+      "forward_intensity_mw_cm2": 70.0,
+      "forward_tempo_concentration_mM": 0.0,
+      "override_used": false
+    }
+  },
+  "target": {
+    "name": "Sync_line.png",
+    "path": "C:\\uSLS\\AIE-2D-David\\GEO\\Sync_line.png",
+    "shape": [
+      320,
+      512
+    ],
+    "target_threshold": 0.5
+  },
+  "initialization": {
+    "mode": "physics-aware",
+    "heuristic_only": true,
+    "heuristic_scope": "first MPC solve cold start only; AIE forward physics and MPC objective are unchanged",
+    "checkpoint_selection": "earliest explicit target requirement",
+    "checkpoint_time_s": 6.0,
+    "checkpoint_doc": 0.9,
+    "nominal_intensity_mw_cm2": 12.010699247184675,
+    "nominal_normalized_level": 0.17158141781692393,
+    "nominal_predicted_doc": 0.9000000000060168,
+    "nominal_maximum_achievable_doc": 0.999597020386211,
+    "nominal_solver": {
+      "method": "bounded_monotone_bisection",
+      "iterations": 34,
+      "model": "O2-only constant-local-intensity approximation",
+      "b_law_source": "active AIEModel.params affine B/intensity law"
+    },
+    "optical_initializer": {
+      "method": "Adam on sigmoid-bounded projector logits",
+      "iterations": 100,
+      "learning_rate": 0.1,
+      "outside_weight": 0.5,
+      "initial_loss": 0.0003937809378840029,
+      "final_loss": 0.00010515144822420552,
+      "operator": "AIEModel.prepare_control",
+      "initial_target_level_argument": "unused",
+      "initial_background_level_seed": 0.02
+    },
+    "projector_mask_native": {
+      "target_mean": 0.17719900608062744,
+      "target_min": 0.08787569403648376,
+      "target_max": 0.41126319766044617,
+      "outside_mean": 0.007109800819307566
+    },
+    "local_normalized_intensity_native": {
+      "target_mean": 0.17113281786441803,
+      "target_min": 0.15048393607139587,
+      "target_max": 0.18561933934688568,
+      "outside_mean": 0.009205385111272335
+    },
+    "component_count": 17,
+    "component_metrics": [
+      {
+        "component_id": 1,
+        "pixel_count": 101,
+        "projector_mask_mean": 0.30236033490388703,
+        "local_normalized_intensity_mean": 0.15952795124290012,
+        "local_normalized_intensity_min": 0.15048393607139587,
+        "local_normalized_intensity_max": 0.16542960703372955
+      },
+      {
+        "component_id": 2,
+        "pixel_count": 202,
+        "projector_mask_mean": 0.221461518492439,
+        "local_normalized_intensity_mean": 0.16845065281532778,
+        "local_normalized_intensity_min": 0.16078925132751465,
+        "local_normalized_intensity_max": 0.17372116446495056
+      },
+      {
+        "component_id": 3,
+        "pixel_count": 303,
+        "projector_mask_mean": 0.2102272307174434,
+        "local_normalized_intensity_mean": 0.1682207337011992,
+        "local_normalized_intensity_min": 0.15442705154418945,
+        "local_normalized_intensity_max": 0.18561933934688568
+      },
+      {
+        "component_id": 4,
+        "pixel_count": 404,
+        "projector_mask_mean": 0.19975582266798114,
+        "local_normalized_intensity_mean": 0.16949370558751692,
+        "local_normalized_intensity_min": 0.15783871710300446,
+        "local_normalized_intensity_max": 0.17821520566940308
+      },
+      {
+        "component_id": 5,
+        "pixel_count": 505,
+        "projector_mask_mean": 0.19412941562362238,
+        "local_normalized_intensity_mean": 0.16973085671958357,
+        "local_normalized_intensity_min": 0.15568621456623077,
+        "local_normalized_intensity_max": 0.18322236835956573
+      },
+      {
+        "component_id": 6,
+        "pixel_count": 606,
+        "projector_mask_mean": 0.1909139499117439,
+        "local_normalized_intensity_mean": 0.1700703964965178,
+        "local_normalized_intensity_min": 0.15686742961406708,
+        "local_normalized_intensity_max": 0.1799933910369873
+      },
+      {
+        "component_id": 7,
+        "pixel_count": 707,
+        "projector_mask_mean": 0.18779430908310363,
+        "local_normalized_intensity_mean": 0.17026039060136722,
+        "local_normalized_intensity_min": 0.1561969518661499,
+        "local_normalized_intensity_max": 0.1822175681591034
+      },
+      {
+        "component_id": 8,
+        "pixel_count": 808,
+        "projector_mask_mean": 0.18632126993287612,
+        "local_normalized_intensity_mean": 0.17043777145814187,
+        "local_normalized_intensity_min": 0.15660133957862854,
+        "local_normalized_intensity_max": 0.18083661794662476
+      },
+      {
+        "component_id": 9,
+        "pixel_count": 1313,
+        "projector_mask_mean": 0.18087685338568343,
+        "local_normalized_intensity_mean": 0.1708350756290026,
+        "local_normalized_intensity_min": 0.15650862455368042,
+        "local_normalized_intensity_max": 0.18129684031009674
+      },
+      {
+        "component_id": 10,
+        "pixel_count": 1818,
+        "projector_mask_mean": 0.17862516595306832,
+        "local_normalized_intensity_mean": 0.1710207813938852,
+        "local_normalized_intensity_min": 0.15645785629749298,
+        "local_normalized_intensity_max": 0.18136073648929596
+      },
+      {
+        "component_id": 11,
+        "pixel_count": 2323,
+        "projector_mask_mean": 0.177320340511181,
+        "local_normalized_intensity_mean": 0.17112191362700174,
+        "local_normalized_intensity_min": 0.1564912348985672,
+        "local_normalized_intensity_max": 0.1813327819108963
+      },
+      {
+        "component_id": 12,
+        "pixel_count": 2828,
+        "projector_mask_mean": 0.17648603638589297,
+        "local_normalized_intensity_mean": 0.1711916815716104,
+        "local_normalized_intensity_min": 0.1564655601978302,
+        "local_normalized_intensity_max": 0.18133531510829926
+      },
+      {
+        "component_id": 13,
+        "pixel_count": 3630,
+        "projector_mask_mean": 0.1760506598725299,
+        "local_normalized_intensity_mean": 0.17122409547327636,
+        "local_normalized_intensity_min": 0.15647609531879425,
+        "local_normalized_intensity_max": 0.181330606341362
+      },
+      {
+        "component_id": 14,
+        "pixel_count": 4840,
+        "projector_mask_mean": 0.17515440204234656,
+        "local_normalized_intensity_mean": 0.17129649232980634,
+        "local_normalized_intensity_min": 0.15647414326667786,
+        "local_normalized_intensity_max": 0.18133209645748138
+      },
+      {
+        "component_id": 15,
+        "pixel_count": 6050,
+        "projector_mask_mean": 0.17461685458244372,
+        "local_normalized_intensity_mean": 0.17133934344880838,
+        "local_normalized_intensity_min": 0.15647314488887787,
+        "local_normalized_intensity_max": 0.18133199214935303
+      },
+      {
+        "component_id": 16,
+        "pixel_count": 7260,
+        "projector_mask_mean": 0.17425820948068596,
+        "local_normalized_intensity_mean": 0.1713677931854055,
+        "local_normalized_intensity_min": 0.15647359192371368,
+        "local_normalized_intensity_max": 0.18133209645748138
+      },
+      {
+        "component_id": 17,
+        "pixel_count": 8470,
+        "projector_mask_mean": 0.17400222617644628,
+        "local_normalized_intensity_mean": 0.17138820266639188,
+        "local_normalized_intensity_min": 0.15647359192371368,
+        "local_normalized_intensity_max": 0.181332066655159
+      }
+    ],
+    "component_metrics_path": "initial_guess_component_metrics.csv"
+  },
+  "total_process_time_s": 6.0,
+  "final_geometry_reference": {
+    "doc": 0.9,
+    "source": "last_sparse_requirement_at_or_before_total_time"
+  },
+  "control_settings": {
+    "dt_s": 0.05,
+    "physics_steps_per_control": 10,
+    "control_dt_s": 0.5,
+    "control_steps": 12,
+    "horizon": 12,
+    "prediction_horizon_seconds": 6.0,
+    "target_weight": 1.0,
+    "outside_weight": 0.5,
+    "energy_weight": 0.0001,
+    "smoothness_weight": 0.01
+  },
+  "target_region_doc_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "mean_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.02710467018187046,
+      0.16971899569034576,
+      0.3600631356239319,
+      0.5238655805587769,
+      0.6479430794715881,
+      0.7384553551673889,
+      0.8040139675140381,
+      0.8518110513687134,
+      0.8870693445205688
+    ],
+    "min_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.20177870988845825,
+      0.4033758044242859,
+      0.541659414768219,
+      0.6448700428009033,
+      0.7247081398963928,
+      0.7866501212120056,
+      0.8346613049507141,
+      0.8721526861190796,
+      0.9054955244064331
+    ],
+    "std_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.04699179530143738,
+      0.11866538971662521,
+      0.13106748461723328,
+      0.10552440583705902,
+      0.09176971018314362,
+      0.09252313524484634,
+      0.09776955842971802,
+      0.10294671356678009,
+      0.10711673647165298
+    ],
+    "lower_error": [
+      0.0,
+      0.0,
+      0.0,
+      0.02710467018187046,
+      0.16971899569034576,
+      0.3600631356239319,
+      0.5238655805587769,
+      0.6479430794715881,
+      0.7384553551673889,
+      0.8040139675140381,
+      0.8518110513687134,
+      0.8870693445205688
+    ],
+    "upper_error": [
+      0.0,
+      0.0,
+      0.0,
+      0.1746740397065878,
+      0.23365680873394012,
+      0.1815962791442871,
+      0.12100446224212646,
+      0.07676506042480469,
+      0.0481947660446167,
+      0.030647337436676025,
+      0.02034163475036621,
+      0.018426179885864258
+    ]
+  },
+  "temporal_tracking": null,
+  "sparse_tracking": {
+    "times_s": [
+      6.0
+    ],
+    "requested_doc": [
+      0.9
+    ],
+    "achieved_doc": [
+      0.8870693445205688
+    ],
+    "mean_target_doc": [
+      0.8870693445205688
+    ],
+    "min_target_doc": [
+      0.0
+    ],
+    "max_target_doc": [
+      0.9054955244064331
+    ],
+    "std_target_doc": [
+      0.10711673647165298
+    ],
+    "lower_error": [
+      0.8870693445205688
+    ],
+    "upper_error": [
+      0.018426179885864258
+    ],
+    "errors": [
+      -0.012930655479431175
+    ],
+    "rmse": 0.012930655479431175,
+    "mae": 0.012930655479431175,
+    "max_absolute_error": 0.012930655479431175,
+    "table_path": "doc_tracking_points.csv"
+  },
+  "soft_doc": {
+    "full_image_rmse": 0.05473700853022157,
+    "target_region_rmse": 0.10789437758044843,
+    "outside_region_rmse": 0.00011508298016580526,
+    "full_image_mae": 0.003457302731403616
+  },
+  "geometry": {
+    "threshold": 0.5,
+    "threshold_interpretation": "Computational segmentation threshold only; not claimed as an experimentally calibrated gel-point threshold.",
+    "target_threshold": 0.5,
+    "iou": 0.9856289129197495,
+    "dice": 0.9927624507345038,
+    "precision": 1.0,
+    "recall": 0.9856289129197495,
+    "undercure_fraction": 0.014371087080250427,
+    "overcure_fraction_target_normalized": 0.0,
+    "overcure_fraction_image": 0.0,
+    "area_error_fraction": -0.014371087080250427,
+    "pixel_counts": {
+      "image_area": 163840,
+      "target_area": 42168,
+      "cured_area": 41562,
+      "true_positive": 41562,
+      "false_positive": 0,
+      "false_negative": 606
+    }
+  },
+  "boundary": {
+    "status": "ok",
+    "mean_symmetric_distance_px": 3.403759907227064,
+    "mean_symmetric_distance_um": 25.868575294925687,
+    "p95_symmetric_distance_px": 33.0,
+    "p95_symmetric_distance_um": 250.79999999999998
+  },
+  "components": {
+    "count": 17,
+    "component_mean_doc_mean": 0.7411778051043969,
+    "component_mean_doc_min": 0.0,
+    "component_mean_doc_max": 0.9000767212271522,
+    "worst_mean_doc": 0.0,
+    "worst_mean_doc_component_id": 1,
+    "worst_cured_fraction": 0.0,
+    "worst_cured_fraction_component_id": 1,
+    "worst_undercure_fraction": 1.0,
+    "worst_undercure_component_id": 1,
+    "table_path": "component_metrics.csv"
+  },
+  "holes": {
+    "count": 0,
+    "total_hole_pixels": 0,
+    "cured_fraction": 0.0,
+    "mean_doc": 0.0,
+    "p95_doc": 0.0,
+    "max_doc": 0.0,
+    "details": []
+  }
+}
