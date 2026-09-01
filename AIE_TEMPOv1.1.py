@@ -315,11 +315,10 @@ for epoch in range(numEpochs):
         t=Dosenext/(blur_mask.clamp(min=1e-12)/255*intensity)
     
         #DoCnext= 1-torch.exp(-B*(t-C).clamp(min=0))
-        x = cum_light + energy
+        cum_light = cum_light + energy
         pre_cure = (pre_slope * cum_light).clamp(0, pre_cap) #slight upward creep while O2/TEMPO still inhibiting
-        DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(-(B*t).clamp(min=0)), pre_cure)
-        #DoCnext = DoCnext - O2next * 0.002 + 0.005
-        #DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(B*(-t)), DoC[-1])
+        # DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(-(B*t).clamp(min=0)), pre_cure)
+        DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(B*(-t)), DoC[-1])
         
         '''
         # Jaden_Step_accumulation_Method (at most 1 step error)

@@ -299,6 +299,50 @@ def _expect_expression(tree: ast.Module, name: str, expected: str) -> ast.Assign
     return assignment
 
 
+def _validate_doc_equation(tree: ast.Module) -> ast.Assign:
+    """Validate the active authoritative DoC assignment exactly."""
+
+    assignment = _active_assignment(tree, "DoCnext")
+    expression = assignment.value
+    if not (
+        isinstance(expression, ast.Call)
+        and _same_expression(expression.func, _ast_expression("torch.where"))
+        and len(expression.args) == 3
+        and not expression.keywords
+        and _same_expression(
+            expression.args[0],
+            _ast_expression("(O2next <= 0) & (TEMPOnext <= 0)"),
+        )
+    ):
+        raise UnsupportedReferencePhysicsError(
+            "unsupported active DoCnext equation: " + ast.unparse(expression)
+        )
+
+    # B * (-t) is algebraically identical to -(B * t), and therefore to the
+    # established 1 - exp(-B*t) law (in particular on the active nonnegative
+    # B/time domain).  Keep the formerly supported clamped spelling as a strict
+    # alternative; no other curing expression is accepted.
+    supported_curing_branches = (
+        _ast_expression("1 - torch.exp(B * (-t))"),
+        _ast_expression("1 - torch.exp(-(B * t).clamp(min=0))"),
+    )
+    if not any(
+        _same_expression(expression.args[1], supported)
+        for supported in supported_curing_branches
+    ):
+        raise UnsupportedReferencePhysicsError(
+            "unsupported active DoCnext curing branch: "
+            + ast.unparse(expression.args[1])
+        )
+
+    if not _same_expression(expression.args[2], _ast_expression("DoC[-1]")):
+        raise UnsupportedReferencePhysicsError(
+            "unsupported active DoCnext non-curing branch: "
+            + ast.unparse(expression.args[2])
+        )
+    return assignment
+
+
 def _extract_clamp_min(node: ast.AST) -> float:
     values: list[float] = []
     for child in ast.walk(node):
@@ -443,11 +487,7 @@ def _validate_equations(
         raise UnsupportedReferencePhysicsError(
             "exposure time must equal Dosenext / active local intensity"
         )
-    doc_assignment = _expect_expression(
-        tree,
-        "DoCnext",
-        "torch.where((O2next <= 0) & (TEMPOnext <= 0), 1 - torch.exp(-(B * t).clamp(min=0)), DoC[-1])",
-    )
+    doc_assignment = _validate_doc_equation(tree)
 
     o2_assignment = _active_assignment(tree, "O2_diffused")
     o2_diffusion_enabled = "F.conv2d" in ast.unparse(o2_assignment.value)
@@ -871,7 +911,11 @@ def load_reference_config() -> ReferenceConfig:
         tempo_gaussian_sigma_scale=equations["tempo_sigma_scale"],
         o2_diffusion_enabled=equations["o2_diffusion_enabled"],
         tempo_diffusion_enabled=equations["tempo_diffusion_enabled"],
-        chain_growth_noise_std=_required_numeric(values, "chainGrowth_noise_std"),
+        chain_growth_noise_std=(
+            _required_numeric(values, "chainGrowth_noise_std")
+            if equations["chain_growth_noise_enabled"]
+            else 0.0
+        ),
         chain_growth_noise_enabled=equations["chain_growth_noise_enabled"],
         b_slope=equations["b_slope"],
         b_intercept=equations["b_intercept"],

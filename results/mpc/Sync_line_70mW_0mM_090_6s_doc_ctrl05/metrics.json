@@ -1,0 +1,491 @@
+{
+  "schema_version": 1,
+  "tracking_variable": "doc",
+  "primary_result_grid": "native",
+  "tracking_specification": {
+    "tracking_mode": "checkpoints",
+    "tracking_reference_type": "explicit_checkpoints",
+    "tracking_reference_source": "collaborator_specification",
+    "tracking_times_s": [
+      6.0
+    ],
+    "tracking_values": [
+      0.9
+    ],
+    "point_weights": [
+      1.0
+    ],
+    "point_weighting": "equal",
+    "target_tracking_stage_policy": "only_exact_configured_absolute_times",
+    "non_target_penalty_stage_policy": "all_prediction_stages",
+    "spatial_definition": "pixelwise",
+    "tracking_loss": "mse",
+    "tracking_variable": "doc",
+    "huber_delta": null,
+    "curve_reference": null
+  },
+  "reference_provenance": null,
+  "forward_model_provenance": {
+    "source": "AIE_TEMPOv1.1.py",
+    "sha256": "4c37355a1018d77dea2a16cb083a1eed5939f1ddc51c1fd06527ac671e582e28",
+    "selector": "70mW_0mM",
+    "resolved_source_mode": "active_authoritative",
+    "value_sources": {
+      "intensity": "active assignment",
+      "o2_inhibition": "active assignment",
+      "total_inhibition": "active assignment",
+      "tempo_inhibition": "derived from active assignments",
+      "b_law": "active expression",
+      "dt": "active assignment",
+      "pixel_pitch": "active assignment",
+      "o2_diffusivity": "active assignment",
+      "tempo_diffusivity": "active assignment",
+      "scattering": "active assignment"
+    },
+    "history_mode": "incremental_reaction_progress_v1",
+    "history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+    "tracking_reference_physics_match": {
+      "matched": true,
+      "tracking_reference_type": "explicit_checkpoints",
+      "tracking_reference_source": "collaborator_specification",
+      "forward_condition_id": "70mW_0mM",
+      "forward_intensity_mw_cm2": 70.0,
+      "forward_tempo_concentration_mM": 0.0,
+      "override_used": false
+    }
+  },
+  "target": {
+    "name": "Sync_line.png",
+    "path": "C:\\uSLS\\AIE-2D-David\\GEO\\Sync_line.png",
+    "shape": [
+      320,
+      512
+    ],
+    "target_threshold": 0.5
+  },
+  "initialization": {
+    "mode": "uniform",
+    "heuristic_only": false,
+    "initial_target_level": 0.95,
+    "initial_background_level": 0.02
+  },
+  "total_process_time_s": 6.0,
+  "final_geometry_reference": {
+    "doc": 0.9,
+    "source": "last_sparse_requirement_at_or_before_total_time"
+  },
+  "control_settings": {
+    "dt_s": 0.05,
+    "physics_steps_per_control": 10,
+    "control_dt_s": 0.5,
+    "control_steps": 12,
+    "horizon": 12,
+    "prediction_horizon_seconds": 6.0,
+    "target_weight": 1.0,
+    "outside_weight": 0.5,
+    "energy_weight": 0.0001,
+    "smoothness_weight": 0.01
+  },
+  "target_region_doc_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "mean_target_doc": [
+      0.0,
+      0.41621196269989014,
+      0.6493736505508423,
+      0.770693302154541,
+      0.8443342447280884,
+      0.8917163610458374,
+      0.9245196580886841,
+      0.9484996199607849,
+      0.9650152325630188,
+      0.9761063456535339,
+      0.983761727809906,
+      0.9891421794891357
+    ],
+    "min_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.1575911045074463,
+      0.4614101052284241,
+      0.6672224402427673,
+      0.7946830987930298,
+      0.8740280866622925
+    ],
+    "max_target_doc": [
+      0.0,
+      0.4879224896430969,
+      0.7409934997558594,
+      0.8689045310020447,
+      0.9335973262786865,
+      0.966339111328125,
+      0.9829221963882446,
+      0.9913278818130493,
+      0.9955920577049255,
+      0.9977571368217468,
+      0.9988576173782349,
+      0.9994179010391235
+    ],
+    "std_target_doc": [
+      0.0,
+      0.1516905128955841,
+      0.22286087274551392,
+      0.2585121989250183,
+      0.24536021053791046,
+      0.21268878877162933,
+      0.17220880091190338,
+      0.12708835303783417,
+      0.08988521248102188,
+      0.06327954679727554,
+      0.0440799780189991,
+      0.030059942975640297
+    ],
+    "lower_error": [
+      0.0,
+      0.41621196269989014,
+      0.6493736505508423,
+      0.770693302154541,
+      0.8443342447280884,
+      0.8917163610458374,
+      0.9245196580886841,
+      0.7909085154533386,
+      0.5036051273345947,
+      0.3088839054107666,
+      0.18907862901687622,
+      0.11511409282684326
+    ],
+    "upper_error": [
+      0.0,
+      0.07171052694320679,
+      0.09161984920501709,
+      0.09821122884750366,
+      0.08926308155059814,
+      0.0746227502822876,
+      0.05840253829956055,
+      0.042828261852264404,
+      0.03057682514190674,
+      0.02165079116821289,
+      0.015095889568328857,
+      0.010275721549987793
+    ]
+  },
+  "target_region_reaction_progress_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "requested_reaction_progress": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      2.302585092994046
+    ],
+    "mean_target_reaction_progress": [
+      0.0,
+      0.5640096068382263,
+      1.1631159782409668,
+      1.765580177307129,
+      2.381739854812622,
+      3.005507469177246,
+      3.6352970600128174,
+      4.2689666748046875,
+      4.902919769287109,
+      5.536353588104248,
+      6.170434951782227,
+      6.807500839233398
+    ],
+    "min_target_reaction_progress": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.17148977518081665,
+      0.6188008189201355,
+      1.100281000137329,
+      1.5832006931304932,
+      2.0716965198516846
+    ],
+    "max_target_reaction_progress": [
+      0.0,
+      0.6692792773246765,
+      1.3509021997451782,
+      2.031829357147217,
+      2.7120184898376465,
+      3.39141845703125,
+      4.069976806640625,
+      4.747638702392578,
+      5.424341201782227,
+      6.100014686584473,
+      6.774624824523926,
+      7.448896408081055
+    ],
+    "std_target_reaction_progress": [
+      0.0,
+      0.2122001051902771,
+      0.41406309604644775,
+      0.615318775177002,
+      0.7832573056221008,
+      0.9292680621147156,
+      1.0559422969818115,
+      1.166545033454895,
+      1.271175503730774,
+      1.3728580474853516,
+      1.4690008163452148,
+      1.5573407411575317
+    ],
+    "reaction_progress_error": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      4.5049157462393525
+    ]
+  },
+  "target_region_o2_timeline_mj_cm2": {
+    "units": "mJ/cm^2",
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "target_o2_mean": [
+      2.6626999378204346,
+      0.23209148645401,
+      0.18925704061985016,
+      0.11211886256933212,
+      0.07945578545331955,
+      0.036920588463544846,
+      0.00714320782572031,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_o2_min": [
+      0.6307406425476074,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_o2_max": [
+      26.111309051513672,
+      21.71160888671875,
+      17.987590789794922,
+      14.569890022277832,
+      11.216374397277832,
+      8.400390625,
+      4.477707386016846,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_o2_std": [
+      4.056720733642578,
+      1.3934359550476074,
+      1.0421546697616577,
+      0.8181893229484558,
+      0.6002100110054016,
+      0.421966016292572,
+      0.1308641880750656,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "temporal_tracking": null,
+  "temporal_reaction_progress_tracking": null,
+  "sparse_tracking": {
+    "tracking_variable": "doc",
+    "times_s": [
+      6.0
+    ],
+    "requested_doc": [
+      0.9
+    ],
+    "achieved_doc": [
+      0.9891421794891357
+    ],
+    "mean_target_doc": [
+      0.9891421794891357
+    ],
+    "min_target_doc": [
+      0.8740280866622925
+    ],
+    "max_target_doc": [
+      0.9994179010391235
+    ],
+    "std_target_doc": [
+      0.030059942975640297
+    ],
+    "lower_error": [
+      0.11511409282684326
+    ],
+    "upper_error": [
+      0.010275721549987793
+    ],
+    "errors": [
+      0.08914217948913572
+    ],
+    "requested_reaction_progress": [
+      2.302585092994046
+    ],
+    "mean_target_reaction_progress": [
+      6.807500839233398
+    ],
+    "min_target_reaction_progress": [
+      2.0716965198516846
+    ],
+    "max_target_reaction_progress": [
+      7.448896408081055
+    ],
+    "std_target_reaction_progress": [
+      1.5573407411575317
+    ],
+    "reaction_progress_error": [
+      4.5049157462393525
+    ],
+    "reaction_progress_rmse": 4.5049157462393525,
+    "reaction_progress_mae": 4.5049157462393525,
+    "reaction_progress_max_absolute_error": 4.5049157462393525,
+    "target_o2_mean": [
+      0.0
+    ],
+    "target_o2_min": [
+      0.0
+    ],
+    "target_o2_max": [
+      0.0
+    ],
+    "target_o2_std": [
+      0.0
+    ],
+    "target_o2_units": "mJ/cm^2",
+    "rmse": 0.08914217948913572,
+    "mae": 0.08914217948913572,
+    "max_absolute_error": 0.08914217948913572,
+    "table_path": "doc_tracking_points.csv"
+  },
+  "soft_doc": {
+    "full_image_rmse": 0.04772575050254216,
+    "target_region_rmse": 0.0940739382030537,
+    "outside_region_rmse": 0.00016422323982136556,
+    "full_image_mae": 0.023003419727247086
+  },
+  "geometry": {
+    "threshold": 0.5,
+    "threshold_interpretation": "Computational segmentation threshold only; not claimed as an experimentally calibrated gel-point threshold.",
+    "target_threshold": 0.5,
+    "iou": 1.0,
+    "dice": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "undercure_fraction": 0.0,
+    "overcure_fraction_target_normalized": 0.0,
+    "overcure_fraction_image": 0.0,
+    "area_error_fraction": 0.0,
+    "pixel_counts": {
+      "image_area": 163840,
+      "target_area": 42168,
+      "cured_area": 42168,
+      "true_positive": 42168,
+      "false_positive": 0,
+      "false_negative": 0
+    }
+  },
+  "boundary": {
+    "status": "ok",
+    "mean_symmetric_distance_px": 0.0,
+    "mean_symmetric_distance_um": 0.0,
+    "p95_symmetric_distance_px": 0.0,
+    "p95_symmetric_distance_um": 0.0
+  },
+  "components": {
+    "count": 17,
+    "component_mean_doc_mean": 0.966930588161839,
+    "component_mean_doc_min": 0.8995128746079927,
+    "component_mean_doc_max": 0.9948794171407626,
+    "worst_mean_doc": 0.8995128746079927,
+    "worst_mean_doc_component_id": 1,
+    "worst_cured_fraction": 1.0,
+    "worst_cured_fraction_component_id": 1,
+    "worst_undercure_fraction": 0.0,
+    "worst_undercure_component_id": 1,
+    "table_path": "component_metrics.csv"
+  },
+  "holes": {
+    "count": 0,
+    "total_hole_pixels": 0,
+    "cured_fraction": 0.0,
+    "mean_doc": 0.0,
+    "p95_doc": 0.0,
+    "max_doc": 0.0,
+    "details": []
+  }
+}

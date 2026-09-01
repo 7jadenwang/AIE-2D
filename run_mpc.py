@@ -68,8 +68,10 @@ from tracking_config import (
     SPATIAL_DEFINITIONS,
     TRACKING_LOSSES,
     TRACKING_MODES,
+    TRACKING_VARIABLES,
     TrackingConfigurationError,
     TrackingSpecification,
+    doc_to_reaction_progress,
     parse_checkpoints as parse_tracking_checkpoints,
     parse_float_list,
     resolve_sampled_tracking_times,
@@ -487,6 +489,7 @@ def replay_native_controls(
     device: torch.device,
     doc_frame_callback: Callable[[int, torch.Tensor], None] | None = None,
     authoritative_reference: object | None = None,
+    state_callback: Callable[[int, AIEState], None] | None = None,
 ) -> AIEState:
     """Replay recovered masks through a fresh native model without optimization."""
 
@@ -508,6 +511,8 @@ def replay_native_controls(
     native_state = native_model.initialize_state(native_shape)
     if doc_frame_callback is not None:
         doc_frame_callback(0, native_state.doc)
+    if state_callback is not None:
+        state_callback(0, native_state)
     with torch.no_grad():
         for replay_step, control in enumerate(applied_controls_native, start=1):
             if tuple(control.shape) != native_shape:
@@ -522,6 +527,8 @@ def replay_native_controls(
             )
             if doc_frame_callback is not None:
                 doc_frame_callback(replay_step, native_state.doc)
+            if state_callback is not None:
+                state_callback(replay_step, native_state)
     return native_state
 
 
@@ -559,6 +566,52 @@ def doc_region_summary(
         "std_target_doc": float(target_values.std(unbiased=False)),
         "mean_outside_doc": outside_mean,
     }
+
+
+def target_field_summary(
+    field: torch.Tensor,
+    target: torch.Tensor,
+    target_threshold: float,
+    *,
+    label: str,
+) -> dict[str, float]:
+    """Compute target-region statistics for a physical model-state field."""
+
+    if tuple(field.shape) != tuple(target.shape):
+        raise ValueError(
+            f"{label} shape {tuple(field.shape)} does not match target shape "
+            f"{tuple(target.shape)}"
+        )
+    target_region = target > target_threshold
+    if not bool(target_region.any()):
+        raise ValueError("target has no pixels above target_threshold")
+    values = field[target_region]
+    return {
+        "mean": float(values.mean()),
+        "min": float(values.min()),
+        "max": float(values.max()),
+        "std": float(values.std(unbiased=False)),
+    }
+
+
+def doc_array_to_reaction_progress_for_reporting(
+    required_doc: np.ndarray,
+) -> np.ndarray:
+    """Map DoC requirements to R for output; exact DoC=1 is reported as infinity."""
+
+    values = np.asarray(required_doc, dtype=float)
+    result = np.full_like(values, np.nan)
+    finite = np.isfinite(values)
+    below_one = finite & (values < 1.0)
+    result[below_one] = -np.log1p(-values[below_one])
+    result[finite & (values == 1.0)] = np.inf
+    return result
+
+
+def json_safe_float_list(values: np.ndarray) -> list[float | None]:
+    """Represent non-finite diagnostic values explicitly as JSON null."""
+
+    return [float(value) if math.isfinite(float(value)) else None for value in values]
 
 
 def normalized_field_region_summary(
@@ -706,6 +759,7 @@ def resolve_tracking_configuration(
         "point_weights": point_weights,
         "spatial_definition": args.tracking_spatial_definition,
         "tracking_loss": args.tracking_loss,
+        "tracking_variable": args.tracking_variable,
         "huber_delta": args.huber_delta,
     }
     warnings: list[str] = []
@@ -747,6 +801,7 @@ def resolve_tracking_configuration(
                 reference_curve,
                 spatial_definition=args.tracking_spatial_definition,
                 tracking_loss=args.tracking_loss,
+                tracking_variable=args.tracking_variable,
                 huber_delta=args.huber_delta,
             )
         else:
@@ -775,9 +830,17 @@ def calculate_checkpoint_tracking(
     min_target_doc: np.ndarray,
     max_target_doc: np.ndarray,
     std_target_doc: np.ndarray,
+    mean_target_reaction_progress: np.ndarray,
+    min_target_reaction_progress: np.ndarray,
+    max_target_reaction_progress: np.ndarray,
+    std_target_reaction_progress: np.ndarray,
+    target_o2_mean: np.ndarray,
+    target_o2_min: np.ndarray,
+    target_o2_max: np.ndarray,
+    target_o2_std: np.ndarray,
     checkpoints: tuple[tuple[float, float], ...],
 ) -> dict[str, object]:
-    """Extract target-region DoC statistics and errors at sparse tracking points."""
+    """Extract target-region DoC, reaction-progress, and O2 point statistics."""
 
     requested = np.asarray([value for _, value in checkpoints], dtype=float)
     checkpoint_times = np.asarray([time_s for time_s, _ in checkpoints], dtype=float)
@@ -785,6 +848,14 @@ def calculate_checkpoint_tracking(
     minimum = np.empty_like(requested)
     maximum = np.empty_like(requested)
     standard_deviation = np.empty_like(requested)
+    achieved_reaction_progress = np.empty_like(requested)
+    minimum_reaction_progress = np.empty_like(requested)
+    maximum_reaction_progress = np.empty_like(requested)
+    reaction_progress_standard_deviation = np.empty_like(requested)
+    o2_mean = np.empty_like(requested)
+    o2_minimum = np.empty_like(requested)
+    o2_maximum = np.empty_like(requested)
+    o2_standard_deviation = np.empty_like(requested)
     for index, checkpoint_time in enumerate(checkpoint_times):
         matches = np.flatnonzero(
             np.isclose(control_times_s, checkpoint_time, rtol=0.0, atol=1e-9)
@@ -798,7 +869,26 @@ def calculate_checkpoint_tracking(
         minimum[index] = min_target_doc[matched_index]
         maximum[index] = max_target_doc[matched_index]
         standard_deviation[index] = std_target_doc[matched_index]
+        achieved_reaction_progress[index] = mean_target_reaction_progress[matched_index]
+        minimum_reaction_progress[index] = min_target_reaction_progress[matched_index]
+        maximum_reaction_progress[index] = max_target_reaction_progress[matched_index]
+        reaction_progress_standard_deviation[index] = (
+            std_target_reaction_progress[matched_index]
+        )
+        o2_mean[index] = target_o2_mean[matched_index]
+        o2_minimum[index] = target_o2_min[matched_index]
+        o2_maximum[index] = target_o2_max[matched_index]
+        o2_standard_deviation[index] = target_o2_std[matched_index]
     errors = achieved - requested
+    requested_reaction_progress = doc_array_to_reaction_progress_for_reporting(
+        requested
+    )
+    reaction_progress_errors = (
+        achieved_reaction_progress - requested_reaction_progress
+    )
+    finite_reaction_errors = reaction_progress_errors[
+        np.isfinite(reaction_progress_errors)
+    ]
     return {
         "times_s": checkpoint_times,
         "requested_doc": requested,
@@ -810,16 +900,47 @@ def calculate_checkpoint_tracking(
         "lower_error": achieved - minimum,
         "upper_error": maximum - achieved,
         "errors": errors,
+        "requested_reaction_progress": requested_reaction_progress,
+        "mean_target_reaction_progress": achieved_reaction_progress,
+        "min_target_reaction_progress": minimum_reaction_progress,
+        "max_target_reaction_progress": maximum_reaction_progress,
+        "std_target_reaction_progress": reaction_progress_standard_deviation,
+        "reaction_progress_error": reaction_progress_errors,
+        "target_o2_mean": o2_mean,
+        "target_o2_min": o2_minimum,
+        "target_o2_max": o2_maximum,
+        "target_o2_std": o2_standard_deviation,
         "rmse": float(np.sqrt(np.mean(np.square(errors)))),
         "mae": float(np.mean(np.abs(errors))),
         "max_absolute_error": float(np.max(np.abs(errors))),
+        "reaction_progress_rmse": (
+            float(np.sqrt(np.mean(np.square(finite_reaction_errors))))
+            if finite_reaction_errors.size
+            else None
+        ),
+        "reaction_progress_mae": (
+            float(np.mean(np.abs(finite_reaction_errors)))
+            if finite_reaction_errors.size
+            else None
+        ),
+        "reaction_progress_max_absolute_error": (
+            float(np.max(np.abs(finite_reaction_errors)))
+            if finite_reaction_errors.size
+            else None
+        ),
     }
 
 
-def save_tracking_points_csv(tracking: dict[str, object], path: Path) -> None:
+def save_tracking_points_csv(
+    tracking: dict[str, object],
+    path: Path,
+    *,
+    tracking_variable: str = "doc",
+) -> None:
     """Save sparse/checkpoint target-region statistics in a tidy table."""
 
     columns = (
+        "tracking_variable",
         "time_s",
         "requested_target_doc",
         "mean_target_doc",
@@ -829,6 +950,16 @@ def save_tracking_points_csv(tracking: dict[str, object], path: Path) -> None:
         "lower_error",
         "upper_error",
         "mean_error",
+        "requested_reaction_progress",
+        "mean_target_reaction_progress",
+        "min_target_reaction_progress",
+        "max_target_reaction_progress",
+        "std_target_reaction_progress",
+        "reaction_progress_error",
+        "target_o2_mean_mj_cm2",
+        "target_o2_min_mj_cm2",
+        "target_o2_max_mj_cm2",
+        "target_o2_std_mj_cm2",
     )
     arrays = (
         tracking["times_s"],
@@ -840,12 +971,26 @@ def save_tracking_points_csv(tracking: dict[str, object], path: Path) -> None:
         tracking["lower_error"],
         tracking["upper_error"],
         tracking["errors"],
+        tracking["requested_reaction_progress"],
+        tracking["mean_target_reaction_progress"],
+        tracking["min_target_reaction_progress"],
+        tracking["max_target_reaction_progress"],
+        tracking["std_target_reaction_progress"],
+        tracking["reaction_progress_error"],
+        tracking["target_o2_mean"],
+        tracking["target_o2_min"],
+        tracking["target_o2_max"],
+        tracking["target_o2_std"],
     )
     with path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=columns)
         writer.writeheader()
         for values in zip(*arrays):
-            writer.writerow(dict(zip(columns, (float(value) for value in values))))
+            row = dict(
+                zip(columns[1:], (float(value) for value in values))
+            )
+            row["tracking_variable"] = tracking_variable
+            writer.writerow(row)
 
 
 def save_component_metrics_csv(rows: list[dict[str, object]], path: Path) -> None:
@@ -885,6 +1030,57 @@ def save_initializer_component_metrics_csv(
         writer.writerows(rows)
 
 
+def _add_target_o2_axis(
+    axis: object,
+    times_s: np.ndarray,
+    target_o2_mean: np.ndarray,
+    target_o2_min: np.ndarray,
+    target_o2_max: np.ndarray,
+) -> object:
+    """Add consistently styled physical O2 diagnostics to a DoC axis."""
+
+    o2_color = "tab:green"
+    o2_axis = axis.twinx()
+    o2_axis.fill_between(
+        times_s,
+        target_o2_min,
+        target_o2_max,
+        color=o2_color,
+        alpha=0.10,
+        label="target O2 min-max range",
+    )
+    o2_axis.plot(
+        times_s,
+        target_o2_mean,
+        color=o2_color,
+        linestyle="--",
+        linewidth=1.7,
+        label="mean target O2",
+    )
+    o2_axis.set_ylabel("Target O2 state (mJ/cm$^2$)", color=o2_color)
+    o2_axis.tick_params(axis="y", colors=o2_color)
+    o2_axis.spines["right"].set_color(o2_color)
+    o2_upper = max(float(np.max(target_o2_max)), 0.0)
+    o2_axis.set_ylim(0.0, max(1.05 * o2_upper, 1e-6))
+    return o2_axis
+
+
+def _place_combined_tracking_legend(figure: object, axis: object, o2_axis: object) -> None:
+    """Place one compact legend above the axes so it does not obscure data."""
+
+    handles, labels = axis.get_legend_handles_labels()
+    o2_handles, o2_labels = o2_axis.get_legend_handles_labels()
+    figure.legend(
+        handles + o2_handles,
+        labels + o2_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.99),
+        ncol=3,
+        fontsize=8,
+    )
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.84))
+
+
 def save_tracking_plot(
     reference_curve: DoCReferenceCurve,
     total_time_s: float,
@@ -892,7 +1088,13 @@ def save_tracking_plot(
     actual_target_doc: np.ndarray,
     min_target_doc: np.ndarray,
     max_target_doc: np.ndarray,
+    target_o2_mean: np.ndarray,
+    target_o2_min: np.ndarray,
+    target_o2_max: np.ndarray,
     path: Path,
+    *,
+    initial_target_doc_summary: dict[str, float],
+    initial_target_o2_summary: dict[str, float],
 ) -> None:
     """Save experimental-reference versus closed-loop mean target DoC."""
 
@@ -904,11 +1106,27 @@ def save_tracking_plot(
     reference_time = np.linspace(0.0, total_time_s, max(401, int(total_time_s / 0.01) + 1))
     reference_doc = np.asarray(reference_curve.at(reference_time))
     figure, axis = plt.subplots(figsize=(8, 5))
-    axis.plot(reference_time, reference_doc, label="experimental reference", linewidth=2)
+    axis.plot(
+        reference_time,
+        reference_doc,
+        color="tab:gray",
+        linestyle=":",
+        label="experimental reference",
+        linewidth=2,
+    )
     achieved_times = np.r_[0.0, control_times_s]
-    achieved_mean = np.r_[0.0, actual_target_doc]
-    achieved_min = np.r_[0.0, min_target_doc]
-    achieved_max = np.r_[0.0, max_target_doc]
+    achieved_mean = np.r_[
+        initial_target_doc_summary["mean_target_doc"], actual_target_doc
+    ]
+    achieved_min = np.r_[
+        initial_target_doc_summary["min_target_doc"], min_target_doc
+    ]
+    achieved_max = np.r_[
+        initial_target_doc_summary["max_target_doc"], max_target_doc
+    ]
+    plotted_o2_mean = np.r_[initial_target_o2_summary["mean"], target_o2_mean]
+    plotted_o2_min = np.r_[initial_target_o2_summary["min"], target_o2_min]
+    plotted_o2_max = np.r_[initial_target_o2_summary["max"], target_o2_max]
     axis.fill_between(
         achieved_times,
         achieved_min,
@@ -921,18 +1139,25 @@ def save_tracking_plot(
         achieved_times,
         achieved_mean,
         "o-",
+        color="tab:blue",
         markersize=3,
-        label="closed-loop mean target DoC",
+        label="simulated mean target DoC",
     )
     axis.set_xlim(0.0, total_time_s)
     axis.set_ylim(0.0, 1.02)
     axis.set_xlabel("Absolute process time (s)")
     axis.set_ylabel("Degree of conversion")
+    o2_axis = _add_target_o2_axis(
+        axis,
+        achieved_times,
+        plotted_o2_mean,
+        plotted_o2_min,
+        plotted_o2_max,
+    )
     title = reference_curve.metadata["condition_label"].replace("cm^2", r"cm$^2$")
     axis.set_title(f"DoC trajectory tracking: {title}")
     axis.grid(alpha=0.25)
-    axis.legend()
-    figure.tight_layout()
+    _place_combined_tracking_legend(figure, axis, o2_axis)
     figure.savefig(path, dpi=180)
     plt.close(figure)
 
@@ -941,9 +1166,16 @@ def save_checkpoint_tracking_plot(
     total_time_s: float,
     control_times_s: np.ndarray,
     actual_target_doc: np.ndarray,
+    min_target_doc: np.ndarray,
+    max_target_doc: np.ndarray,
+    target_o2_mean: np.ndarray,
+    target_o2_min: np.ndarray,
+    target_o2_max: np.ndarray,
     checkpoint_tracking: dict[str, object],
     path: Path,
     *,
+    initial_target_doc_summary: dict[str, float],
+    initial_target_o2_summary: dict[str, float],
     marker_label: str = "explicit target checkpoints",
     title: str = "Checkpoint DoC tracking",
 ) -> None:
@@ -955,12 +1187,33 @@ def save_checkpoint_tracking_plot(
     import matplotlib.pyplot as plt
 
     figure, axis = plt.subplots(figsize=(8, 5))
+    plotted_times = np.r_[0.0, control_times_s]
+    plotted_doc_mean = np.r_[
+        initial_target_doc_summary["mean_target_doc"], actual_target_doc
+    ]
+    plotted_doc_min = np.r_[
+        initial_target_doc_summary["min_target_doc"], min_target_doc
+    ]
+    plotted_doc_max = np.r_[
+        initial_target_doc_summary["max_target_doc"], max_target_doc
+    ]
+    plotted_o2_mean = np.r_[initial_target_o2_summary["mean"], target_o2_mean]
+    plotted_o2_min = np.r_[initial_target_o2_summary["min"], target_o2_min]
+    plotted_o2_max = np.r_[initial_target_o2_summary["max"], target_o2_max]
     axis.plot(
-        np.r_[0.0, control_times_s],
-        np.r_[0.0, actual_target_doc],
+        plotted_times,
+        plotted_doc_mean,
         "o-",
+        color="tab:blue",
         markersize=3,
         label="simulated mean target DoC",
+    )
+    axis.fill_between(
+        plotted_times,
+        plotted_doc_min,
+        plotted_doc_max,
+        color="tab:orange",
+        alpha=0.12,
     )
     axis.scatter(
         checkpoint_tracking["times_s"],
@@ -992,10 +1245,16 @@ def save_checkpoint_tracking_plot(
     axis.set_ylim(0.0, 1.02)
     axis.set_xlabel("Absolute process time (s)")
     axis.set_ylabel("Degree of conversion")
+    o2_axis = _add_target_o2_axis(
+        axis,
+        plotted_times,
+        plotted_o2_mean,
+        plotted_o2_min,
+        plotted_o2_max,
+    )
     axis.set_title(title)
     axis.grid(alpha=0.25)
-    axis.legend()
-    figure.tight_layout()
+    _place_combined_tracking_legend(figure, axis, o2_axis)
     figure.savefig(path, dpi=180)
     plt.close(figure)
 
@@ -1008,6 +1267,7 @@ def print_metrics_summary(
     *,
     reference_id: str,
     tracking_mode: str,
+    tracking_variable: str,
     total_time_s: float,
     tracking: dict[str, float],
     checkpoint_tracking: dict[str, object] | None,
@@ -1040,6 +1300,7 @@ def print_metrics_summary(
         )
         print(f"\n=== {heading} ===")
         print(f"reference type:            {reference_type}")
+        print(f"tracking variable:         {tracking_variable}")
         print(f"physics condition:         {reference_id}")
         print(f"total time:                {total_time_s:.2f} s")
         print("time    requested      mean       min       max       std     mean error")
@@ -1059,8 +1320,28 @@ def print_metrics_summary(
         print(f"sparse-point RMSE:         {tracking['rmse']:.6f}")
         print(f"sparse-point MAE:          {tracking['mae']:.6f}")
         print(f"sparse max abs error:      {tracking['max_absolute_error']:.6f}")
+        print("time     requested R    mean R     min R     max R     std R    R error    O2 mean/min/max")
+        for values in zip(
+            checkpoint_tracking["times_s"],
+            checkpoint_tracking["requested_reaction_progress"],
+            checkpoint_tracking["mean_target_reaction_progress"],
+            checkpoint_tracking["min_target_reaction_progress"],
+            checkpoint_tracking["max_target_reaction_progress"],
+            checkpoint_tracking["std_target_reaction_progress"],
+            checkpoint_tracking["reaction_progress_error"],
+            checkpoint_tracking["target_o2_mean"],
+            checkpoint_tracking["target_o2_min"],
+            checkpoint_tracking["target_o2_max"],
+        ):
+            time_s, requested_r, mean_r, min_r, max_r, std_r, error_r, o2_mean, o2_min, o2_max = values
+            print(
+                f"{time_s:5.2f}  {requested_r:12.6f}  {mean_r:8.4f}  "
+                f"{min_r:8.4f}  {max_r:8.4f}  {std_r:8.4f}  {error_r:+9.4f}  "
+                f"{o2_mean:.4f}/{o2_min:.4f}/{o2_max:.4f}"
+            )
     else:
         print("\n=== Closed-loop tracking ===")
+        print(f"tracking variable:         {tracking_variable}")
         print(f"reference ID:              {reference_id}")
         print(f"total time:                {total_time_s:.2f} s")
         print(f"tracking RMSE:             {tracking['rmse']:.6f}")
@@ -1309,6 +1590,7 @@ def run_demo(args: argparse.Namespace) -> None:
     _print_parameter_provenance(native_params, reference)
     print(f"tracking spatial definition: {args.tracking_spatial_definition}")
     print(f"tracking loss: {args.tracking_loss}")
+    print(f"tracking_variable={args.tracking_variable}")
     if args.tracking_loss == "huber":
         print(f"Huber delta: {args.huber_delta:g}")
     print(
@@ -1354,6 +1636,16 @@ def run_demo(args: argparse.Namespace) -> None:
             "target-side tracking is evaluated only at listed checkpoints; "
             "outside/energy/smoothness penalties remain dense"
         )
+    if args.tracking_variable == "reaction-progress":
+        if checkpoints:
+            print("reaction-progress tracking requirements:")
+            for point_time_s, required_doc in checkpoints:
+                print(
+                    f"  t={point_time_s:.2f} s -> DoC*={required_doc:.4f} "
+                    f"-> R*={doc_to_reaction_progress(required_doc):.6f}"
+                )
+        else:
+            print("dense curve DoC requirements are mapped stagewise with R*=-log1p(-DoC*)")
     for message in tracking_warnings:
         print(f"WARNING: {message}")
     if doc_reference is not None and not physics_match["matched"]:
@@ -1374,6 +1666,15 @@ def run_demo(args: argparse.Namespace) -> None:
     optimization_target = construct_optimization_target(target_native, config)
     model = AIEModel(optimization_params, device=device)
     state = model.initialize_state(config.optimization_shape)
+    optimization_initial_target_doc_summary = doc_region_summary(
+        state.doc, optimization_target, args.target_threshold
+    )
+    optimization_initial_target_o2_summary = target_field_summary(
+        state.o2,
+        optimization_target,
+        args.target_threshold,
+        label="initial O2",
+    )
     controller = DifferentiableMPC(
         model=model,
         target=optimization_target,
@@ -1583,6 +1884,14 @@ def run_demo(args: argparse.Namespace) -> None:
     optimization_target_doc_max: list[float] = []
     optimization_target_doc_std: list[float] = []
     optimization_outside_doc: list[float] = []
+    optimization_target_reaction_progress: list[float] = []
+    optimization_target_reaction_progress_min: list[float] = []
+    optimization_target_reaction_progress_max: list[float] = []
+    optimization_target_reaction_progress_std: list[float] = []
+    optimization_target_o2: list[float] = []
+    optimization_target_o2_min: list[float] = []
+    optimization_target_o2_max: list[float] = []
+    optimization_target_o2_std: list[float] = []
     coarse_doc_frame_paths: list[Path] = []
     native_doc_frame_paths: list[Path] = []
     if config.resolution_mode == "coarse":
@@ -1657,6 +1966,18 @@ def run_demo(args: argparse.Namespace) -> None:
         target_doc_max = target_doc_summary["max_target_doc"]
         target_doc_std = target_doc_summary["std_target_doc"]
         outside_doc_mean = target_doc_summary["mean_outside_doc"]
+        target_reaction_summary = target_field_summary(
+            state.reaction_progress,
+            optimization_target,
+            args.target_threshold,
+            label="reaction_progress",
+        )
+        target_o2_summary = target_field_summary(
+            state.o2,
+            optimization_target,
+            args.target_threshold,
+            label="O2",
+        )
         applied_time_s = (control_step + 1) * control_dt_s
         if args.tracking_mode == "curve":
             assert doc_reference is not None
@@ -1676,6 +1997,14 @@ def run_demo(args: argparse.Namespace) -> None:
         optimization_target_doc_max.append(target_doc_max)
         optimization_target_doc_std.append(target_doc_std)
         optimization_outside_doc.append(outside_doc_mean)
+        optimization_target_reaction_progress.append(target_reaction_summary["mean"])
+        optimization_target_reaction_progress_min.append(target_reaction_summary["min"])
+        optimization_target_reaction_progress_max.append(target_reaction_summary["max"])
+        optimization_target_reaction_progress_std.append(target_reaction_summary["std"])
+        optimization_target_o2.append(target_o2_summary["mean"])
+        optimization_target_o2_min.append(target_o2_summary["min"])
+        optimization_target_o2_max.append(target_o2_summary["max"])
+        optimization_target_o2_std.append(target_o2_summary["std"])
         running_reference = np.asarray(optimization_reference_doc, dtype=float)
         running_actual = np.asarray(optimization_target_doc, dtype=float)
         active_reporting = np.isfinite(running_reference)
@@ -1721,6 +2050,29 @@ def run_demo(args: argparse.Namespace) -> None:
             print(f"maximum target DoC:    {target_doc_max:.4f}")
             print(f"target DoC std:        {target_doc_std:.4f}")
             print(f"mean error:            {target_doc_mean - reference_doc:+.4f}")
+            requested_reaction_progress = float(
+                doc_array_to_reaction_progress_for_reporting(
+                    np.asarray([reference_doc], dtype=float)
+                )[0]
+            )
+            print(f"requested target R:    {requested_reaction_progress:.6f}")
+            print(
+                "achieved R mean/min/max/std: "
+                f"{target_reaction_summary['mean']:.6f}/"
+                f"{target_reaction_summary['min']:.6f}/"
+                f"{target_reaction_summary['max']:.6f}/"
+                f"{target_reaction_summary['std']:.6f}"
+            )
+            print(
+                "R tracking error:       "
+                f"{target_reaction_summary['mean'] - requested_reaction_progress:+.6f}"
+            )
+            print(
+                "target O2 mean/min/max:  "
+                f"{target_o2_summary['mean']:.6f}/"
+                f"{target_o2_summary['min']:.6f}/"
+                f"{target_o2_summary['max']:.6f} mJ/cm^2"
+            )
 
     optimization_state = state
     coarse_gif_path: Path | None = None
@@ -1741,6 +2093,17 @@ def run_demo(args: argparse.Namespace) -> None:
         native_replay_target_doc_max: list[float] = []
         native_replay_target_doc_std: list[float] = []
         native_replay_outside_doc: list[float] = []
+        native_replay_target_reaction_progress: list[float] = []
+        native_replay_target_reaction_progress_min: list[float] = []
+        native_replay_target_reaction_progress_max: list[float] = []
+        native_replay_target_reaction_progress_std: list[float] = []
+        native_replay_target_o2: list[float] = []
+        native_replay_target_o2_min: list[float] = []
+        native_replay_target_o2_max: list[float] = []
+        native_replay_target_o2_std: list[float] = []
+        native_replay_initial_plot_summaries: dict[
+            str, dict[str, float]
+        ] = {}
 
         def save_native_replay_frame(frame_index: int, doc: torch.Tensor) -> None:
             frame_path = args.output_dir / f"doc_frame_native_{frame_index:03d}.png"
@@ -1756,6 +2119,39 @@ def run_demo(args: argparse.Namespace) -> None:
                 native_replay_target_doc_std.append(target_summary["std_target_doc"])
                 native_replay_outside_doc.append(target_summary["mean_outside_doc"])
 
+        def record_native_replay_state(frame_index: int, replay_state: AIEState) -> None:
+            if frame_index == 0:
+                native_replay_initial_plot_summaries["doc"] = doc_region_summary(
+                    replay_state.doc, target_native, args.target_threshold
+                )
+                native_replay_initial_plot_summaries["o2"] = target_field_summary(
+                    replay_state.o2,
+                    target_native,
+                    args.target_threshold,
+                    label="initial native replay O2",
+                )
+                return
+            reaction_summary = target_field_summary(
+                replay_state.reaction_progress,
+                target_native,
+                args.target_threshold,
+                label="native replay reaction_progress",
+            )
+            o2_summary = target_field_summary(
+                replay_state.o2,
+                target_native,
+                args.target_threshold,
+                label="native replay O2",
+            )
+            native_replay_target_reaction_progress.append(reaction_summary["mean"])
+            native_replay_target_reaction_progress_min.append(reaction_summary["min"])
+            native_replay_target_reaction_progress_max.append(reaction_summary["max"])
+            native_replay_target_reaction_progress_std.append(reaction_summary["std"])
+            native_replay_target_o2.append(o2_summary["mean"])
+            native_replay_target_o2_min.append(o2_summary["min"])
+            native_replay_target_o2_max.append(o2_summary["max"])
+            native_replay_target_o2_std.append(o2_summary["std"])
+
         native_state = replay_native_controls(
             native_params,
             config.native_shape,
@@ -1764,6 +2160,15 @@ def run_demo(args: argparse.Namespace) -> None:
             device,
             doc_frame_callback=save_native_replay_frame,
             authoritative_reference=reference,
+            state_callback=record_native_replay_state,
+        )
+        if set(native_replay_initial_plot_summaries) != {"doc", "o2"}:
+            raise AssertionError("native replay did not report its initialized state")
+        initial_target_doc_summary_for_plot = (
+            native_replay_initial_plot_summaries["doc"]
+        )
+        initial_target_o2_summary_for_plot = (
+            native_replay_initial_plot_summaries["o2"]
         )
     else:
         native_state = optimization_state
@@ -1772,6 +2177,24 @@ def run_demo(args: argparse.Namespace) -> None:
         native_replay_target_doc_max = optimization_target_doc_max
         native_replay_target_doc_std = optimization_target_doc_std
         native_replay_outside_doc = optimization_outside_doc
+        native_replay_target_reaction_progress = optimization_target_reaction_progress
+        native_replay_target_reaction_progress_min = (
+            optimization_target_reaction_progress_min
+        )
+        native_replay_target_reaction_progress_max = (
+            optimization_target_reaction_progress_max
+        )
+        native_replay_target_reaction_progress_std = (
+            optimization_target_reaction_progress_std
+        )
+        native_replay_target_o2 = optimization_target_o2
+        native_replay_target_o2_min = optimization_target_o2_min
+        native_replay_target_o2_max = optimization_target_o2_max
+        native_replay_target_o2_std = optimization_target_o2_std
+        initial_target_doc_summary_for_plot = (
+            optimization_initial_target_doc_summary
+        )
+        initial_target_o2_summary_for_plot = optimization_initial_target_o2_summary
 
     if len(native_doc_frame_paths) != args.control_steps + 1:
         raise AssertionError("native DoC timeline has an unexpected frame count")
@@ -1807,6 +2230,22 @@ def run_demo(args: argparse.Namespace) -> None:
     primary_target_doc_lower_error = primary_target_doc - primary_target_doc_min
     primary_target_doc_upper_error = primary_target_doc_max - primary_target_doc
     primary_outside_doc = np.asarray(native_replay_outside_doc, dtype=float)
+    primary_target_reaction_progress = np.asarray(
+        native_replay_target_reaction_progress, dtype=float
+    )
+    primary_target_reaction_progress_min = np.asarray(
+        native_replay_target_reaction_progress_min, dtype=float
+    )
+    primary_target_reaction_progress_max = np.asarray(
+        native_replay_target_reaction_progress_max, dtype=float
+    )
+    primary_target_reaction_progress_std = np.asarray(
+        native_replay_target_reaction_progress_std, dtype=float
+    )
+    primary_target_o2 = np.asarray(native_replay_target_o2, dtype=float)
+    primary_target_o2_min = np.asarray(native_replay_target_o2_min, dtype=float)
+    primary_target_o2_max = np.asarray(native_replay_target_o2_max, dtype=float)
+    primary_target_o2_std = np.asarray(native_replay_target_o2_std, dtype=float)
     if not (
         primary_control_times_s.size
         == primary_reference_doc.size
@@ -1815,13 +2254,36 @@ def run_demo(args: argparse.Namespace) -> None:
         == primary_target_doc_max.size
         == primary_target_doc_std.size
         == primary_outside_doc.size
+        == primary_target_reaction_progress.size
+        == primary_target_reaction_progress_min.size
+        == primary_target_reaction_progress_max.size
+        == primary_target_reaction_progress_std.size
+        == primary_target_o2.size
+        == primary_target_o2_min.size
+        == primary_target_o2_max.size
+        == primary_target_o2_std.size
         == args.control_steps
     ):
         raise AssertionError("primary native tracking timeline has an unexpected length")
     primary_tracking_error = primary_target_doc - primary_reference_doc
+    primary_reference_reaction_progress = (
+        doc_array_to_reaction_progress_for_reporting(primary_reference_doc)
+    )
+    primary_reaction_progress_tracking_error = (
+        primary_target_reaction_progress - primary_reference_reaction_progress
+    )
     checkpoint_tracking: dict[str, object] | None = None
     if args.tracking_mode == "curve":
         tracking = temporal_tracking_metrics(primary_target_doc, primary_reference_doc)
+        finite_reaction_reference = np.isfinite(primary_reference_reaction_progress)
+        reaction_progress_tracking = (
+            temporal_tracking_metrics(
+                primary_target_reaction_progress[finite_reaction_reference],
+                primary_reference_reaction_progress[finite_reaction_reference],
+            )
+            if np.any(finite_reaction_reference)
+            else None
+        )
         assert doc_reference is not None
         reference_final_doc = float(doc_reference.at(total_time_s))
     else:
@@ -1831,6 +2293,14 @@ def run_demo(args: argparse.Namespace) -> None:
             primary_target_doc_min,
             primary_target_doc_max,
             primary_target_doc_std,
+            primary_target_reaction_progress,
+            primary_target_reaction_progress_min,
+            primary_target_reaction_progress_max,
+            primary_target_reaction_progress_std,
+            primary_target_o2,
+            primary_target_o2_min,
+            primary_target_o2_max,
+            primary_target_o2_std,
             checkpoints,
         )
         tracking = {
@@ -1838,6 +2308,17 @@ def run_demo(args: argparse.Namespace) -> None:
             "mae": checkpoint_tracking["mae"],
             "max_absolute_error": checkpoint_tracking["max_absolute_error"],
         }
+        reaction_progress_tracking = (
+            None
+            if checkpoint_tracking["reaction_progress_rmse"] is None
+            else {
+                "rmse": checkpoint_tracking["reaction_progress_rmse"],
+                "mae": checkpoint_tracking["reaction_progress_mae"],
+                "max_absolute_error": checkpoint_tracking[
+                    "reaction_progress_max_absolute_error"
+                ],
+            }
+        )
         reference_final_doc = float(checkpoints[-1][1])
     final_metrics = calculate_final_metrics(
         native_state.doc.detach().cpu().numpy(),
@@ -1859,7 +2340,12 @@ def run_demo(args: argparse.Namespace) -> None:
             primary_target_doc,
             primary_target_doc_min,
             primary_target_doc_max,
+            primary_target_o2,
+            primary_target_o2_min,
+            primary_target_o2_max,
             tracking_plot_path,
+            initial_target_doc_summary=initial_target_doc_summary_for_plot,
+            initial_target_o2_summary=initial_target_o2_summary_for_plot,
         )
     else:
         tracking_plot_path = args.output_dir / "doc_checkpoint_tracking.png"
@@ -1868,8 +2354,15 @@ def run_demo(args: argparse.Namespace) -> None:
             total_time_s,
             primary_control_times_s,
             primary_target_doc,
+            primary_target_doc_min,
+            primary_target_doc_max,
+            primary_target_o2,
+            primary_target_o2_min,
+            primary_target_o2_max,
             checkpoint_tracking,
             tracking_plot_path,
+            initial_target_doc_summary=initial_target_doc_summary_for_plot,
+            initial_target_o2_summary=initial_target_o2_summary_for_plot,
             marker_label=(
                 "sampled fitted-curve requirements"
                 if args.tracking_mode == "sampled-curve"
@@ -1884,7 +2377,11 @@ def run_demo(args: argparse.Namespace) -> None:
     tracking_points_csv_path: Path | None = None
     if checkpoint_tracking is not None:
         tracking_points_csv_path = args.output_dir / "doc_tracking_points.csv"
-        save_tracking_points_csv(checkpoint_tracking, tracking_points_csv_path)
+        save_tracking_points_csv(
+            checkpoint_tracking,
+            tracking_points_csv_path,
+            tracking_variable=args.tracking_variable,
+        )
     components_summary = {
         **final_metrics["components"],
         "table_path": component_metrics_path.name,
@@ -1895,6 +2392,7 @@ def run_demo(args: argparse.Namespace) -> None:
     }
     metrics_document = {
         "schema_version": 1,
+        "tracking_variable": args.tracking_variable,
         "primary_result_grid": (
             "native_replay" if config.resolution_mode == "coarse" else "native"
         ),
@@ -1949,11 +2447,44 @@ def run_demo(args: argparse.Namespace) -> None:
             "lower_error": primary_target_doc_lower_error.tolist(),
             "upper_error": primary_target_doc_upper_error.tolist(),
         },
+        "target_region_reaction_progress_timeline": {
+            "times_s": primary_control_times_s.tolist(),
+            "requested_reaction_progress": json_safe_float_list(
+                primary_reference_reaction_progress
+            ),
+            "mean_target_reaction_progress": (
+                primary_target_reaction_progress.tolist()
+            ),
+            "min_target_reaction_progress": (
+                primary_target_reaction_progress_min.tolist()
+            ),
+            "max_target_reaction_progress": (
+                primary_target_reaction_progress_max.tolist()
+            ),
+            "std_target_reaction_progress": (
+                primary_target_reaction_progress_std.tolist()
+            ),
+            "reaction_progress_error": json_safe_float_list(
+                primary_reaction_progress_tracking_error
+            ),
+        },
+        "target_region_o2_timeline_mj_cm2": {
+            "units": "mJ/cm^2",
+            "times_s": primary_control_times_s.tolist(),
+            "target_o2_mean": primary_target_o2.tolist(),
+            "target_o2_min": primary_target_o2_min.tolist(),
+            "target_o2_max": primary_target_o2_max.tolist(),
+            "target_o2_std": primary_target_o2_std.tolist(),
+        },
         "temporal_tracking": tracking if args.tracking_mode == "curve" else None,
+        "temporal_reaction_progress_tracking": (
+            reaction_progress_tracking if args.tracking_mode == "curve" else None
+        ),
         "sparse_tracking": (
             None
             if checkpoint_tracking is None
             else {
+                "tracking_variable": args.tracking_variable,
                 "times_s": checkpoint_tracking["times_s"].tolist(),
                 "requested_doc": checkpoint_tracking["requested_doc"].tolist(),
                 "achieved_doc": checkpoint_tracking["achieved_doc"].tolist(),
@@ -1964,6 +2495,38 @@ def run_demo(args: argparse.Namespace) -> None:
                 "lower_error": checkpoint_tracking["lower_error"].tolist(),
                 "upper_error": checkpoint_tracking["upper_error"].tolist(),
                 "errors": checkpoint_tracking["errors"].tolist(),
+                "requested_reaction_progress": json_safe_float_list(
+                    checkpoint_tracking["requested_reaction_progress"]
+                ),
+                "mean_target_reaction_progress": checkpoint_tracking[
+                    "mean_target_reaction_progress"
+                ].tolist(),
+                "min_target_reaction_progress": checkpoint_tracking[
+                    "min_target_reaction_progress"
+                ].tolist(),
+                "max_target_reaction_progress": checkpoint_tracking[
+                    "max_target_reaction_progress"
+                ].tolist(),
+                "std_target_reaction_progress": checkpoint_tracking[
+                    "std_target_reaction_progress"
+                ].tolist(),
+                "reaction_progress_error": json_safe_float_list(
+                    checkpoint_tracking["reaction_progress_error"]
+                ),
+                "reaction_progress_rmse": checkpoint_tracking[
+                    "reaction_progress_rmse"
+                ],
+                "reaction_progress_mae": checkpoint_tracking[
+                    "reaction_progress_mae"
+                ],
+                "reaction_progress_max_absolute_error": checkpoint_tracking[
+                    "reaction_progress_max_absolute_error"
+                ],
+                "target_o2_mean": checkpoint_tracking["target_o2_mean"].tolist(),
+                "target_o2_min": checkpoint_tracking["target_o2_min"].tolist(),
+                "target_o2_max": checkpoint_tracking["target_o2_max"].tolist(),
+                "target_o2_std": checkpoint_tracking["target_o2_std"].tolist(),
+                "target_o2_units": "mJ/cm^2",
                 "rmse": checkpoint_tracking["rmse"],
                 "mae": checkpoint_tracking["mae"],
                 "max_absolute_error": checkpoint_tracking["max_absolute_error"],
@@ -2013,6 +2576,7 @@ def run_demo(args: argparse.Namespace) -> None:
         "geometry_threshold_note": np.asarray(GEOMETRY_THRESHOLD_NOTE),
         "control_times_s": primary_control_times_s,
         "reference_doc_values": primary_reference_doc,
+        "reference_reaction_progress_values": primary_reference_reaction_progress,
         "actual_mean_target_doc": primary_target_doc,
         "actual_min_target_doc": primary_target_doc_min,
         "actual_max_target_doc": primary_target_doc_max,
@@ -2020,13 +2584,39 @@ def run_demo(args: argparse.Namespace) -> None:
         "actual_target_doc_lower_error": primary_target_doc_lower_error,
         "actual_target_doc_upper_error": primary_target_doc_upper_error,
         "actual_mean_outside_doc": primary_outside_doc,
+        "actual_mean_target_reaction_progress": primary_target_reaction_progress,
+        "actual_min_target_reaction_progress": primary_target_reaction_progress_min,
+        "actual_max_target_reaction_progress": primary_target_reaction_progress_max,
+        "actual_std_target_reaction_progress": primary_target_reaction_progress_std,
+        "reaction_progress_tracking_errors": primary_reaction_progress_tracking_error,
+        "target_o2_mean": primary_target_o2,
+        "target_o2_min": primary_target_o2_min,
+        "target_o2_max": primary_target_o2_max,
+        "target_o2_std": primary_target_o2_std,
+        "target_o2_units": np.asarray("mJ/cm^2"),
         "temporal_tracking_errors": primary_tracking_error,
         "temporal_tracking_rmse": np.float64(tracking["rmse"]),
         "temporal_tracking_mae": np.float64(tracking["mae"]),
         "temporal_tracking_max_absolute_error": np.float64(
             tracking["max_absolute_error"]
         ),
+        "temporal_reaction_progress_tracking_rmse": np.float64(
+            np.nan
+            if reaction_progress_tracking is None
+            else reaction_progress_tracking["rmse"]
+        ),
+        "temporal_reaction_progress_tracking_mae": np.float64(
+            np.nan
+            if reaction_progress_tracking is None
+            else reaction_progress_tracking["mae"]
+        ),
+        "temporal_reaction_progress_tracking_max_absolute_error": np.float64(
+            np.nan
+            if reaction_progress_tracking is None
+            else reaction_progress_tracking["max_absolute_error"]
+        ),
         "tracking_mode": np.asarray(args.tracking_mode),
+        "tracking_variable": np.asarray(args.tracking_variable),
         "tracking_spatial_definition": np.asarray(
             args.tracking_spatial_definition
         ),
@@ -2039,6 +2629,11 @@ def run_demo(args: argparse.Namespace) -> None:
         ),
         "tracking_point_requested_doc": np.asarray(
             tracking_specification.point_values, dtype=float
+        ),
+        "tracking_point_requested_reaction_progress": (
+            doc_array_to_reaction_progress_for_reporting(
+                np.asarray(tracking_specification.point_values, dtype=float)
+            )
         ),
         "tracking_point_weights": np.asarray(
             tracking_specification.point_weights
@@ -2075,6 +2670,52 @@ def run_demo(args: argparse.Namespace) -> None:
         ),
         "tracking_point_errors": np.asarray(
             [] if checkpoint_tracking is None else checkpoint_tracking["errors"],
+            dtype=float,
+        ),
+        "tracking_point_mean_target_reaction_progress": np.asarray(
+            []
+            if checkpoint_tracking is None
+            else checkpoint_tracking["mean_target_reaction_progress"],
+            dtype=float,
+        ),
+        "tracking_point_min_target_reaction_progress": np.asarray(
+            []
+            if checkpoint_tracking is None
+            else checkpoint_tracking["min_target_reaction_progress"],
+            dtype=float,
+        ),
+        "tracking_point_max_target_reaction_progress": np.asarray(
+            []
+            if checkpoint_tracking is None
+            else checkpoint_tracking["max_target_reaction_progress"],
+            dtype=float,
+        ),
+        "tracking_point_std_target_reaction_progress": np.asarray(
+            []
+            if checkpoint_tracking is None
+            else checkpoint_tracking["std_target_reaction_progress"],
+            dtype=float,
+        ),
+        "tracking_point_reaction_progress_error": np.asarray(
+            []
+            if checkpoint_tracking is None
+            else checkpoint_tracking["reaction_progress_error"],
+            dtype=float,
+        ),
+        "tracking_point_target_o2_mean": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["target_o2_mean"],
+            dtype=float,
+        ),
+        "tracking_point_target_o2_min": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["target_o2_min"],
+            dtype=float,
+        ),
+        "tracking_point_target_o2_max": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["target_o2_max"],
+            dtype=float,
+        ),
+        "tracking_point_target_o2_std": np.asarray(
+            [] if checkpoint_tracking is None else checkpoint_tracking["target_o2_std"],
             dtype=float,
         ),
         "doc_reference_metadata_json": np.asarray(
@@ -2190,10 +2831,52 @@ def run_demo(args: argparse.Namespace) -> None:
                 f"{prefix}_lower_error": checkpoint_tracking["lower_error"],
                 f"{prefix}_upper_error": checkpoint_tracking["upper_error"],
                 f"{prefix}_errors": checkpoint_tracking["errors"],
+                f"{prefix}_requested_reaction_progress": checkpoint_tracking[
+                    "requested_reaction_progress"
+                ],
+                f"{prefix}_mean_target_reaction_progress": checkpoint_tracking[
+                    "mean_target_reaction_progress"
+                ],
+                f"{prefix}_min_target_reaction_progress": checkpoint_tracking[
+                    "min_target_reaction_progress"
+                ],
+                f"{prefix}_max_target_reaction_progress": checkpoint_tracking[
+                    "max_target_reaction_progress"
+                ],
+                f"{prefix}_std_target_reaction_progress": checkpoint_tracking[
+                    "std_target_reaction_progress"
+                ],
+                f"{prefix}_reaction_progress_error": checkpoint_tracking[
+                    "reaction_progress_error"
+                ],
+                f"{prefix}_target_o2_mean": checkpoint_tracking["target_o2_mean"],
+                f"{prefix}_target_o2_min": checkpoint_tracking["target_o2_min"],
+                f"{prefix}_target_o2_max": checkpoint_tracking["target_o2_max"],
+                f"{prefix}_target_o2_std": checkpoint_tracking["target_o2_std"],
                 f"{prefix}_rmse": np.float64(checkpoint_tracking["rmse"]),
                 f"{prefix}_mae": np.float64(checkpoint_tracking["mae"]),
                 f"{prefix}_max_abs_error": np.float64(
                     checkpoint_tracking["max_absolute_error"]
+                ),
+                f"{prefix}_reaction_progress_rmse": np.float64(
+                    np.nan
+                    if checkpoint_tracking["reaction_progress_rmse"] is None
+                    else checkpoint_tracking["reaction_progress_rmse"]
+                ),
+                f"{prefix}_reaction_progress_mae": np.float64(
+                    np.nan
+                    if checkpoint_tracking["reaction_progress_mae"] is None
+                    else checkpoint_tracking["reaction_progress_mae"]
+                ),
+                f"{prefix}_reaction_progress_max_abs_error": np.float64(
+                    np.nan
+                    if checkpoint_tracking[
+                        "reaction_progress_max_absolute_error"
+                    ]
+                    is None
+                    else checkpoint_tracking[
+                        "reaction_progress_max_absolute_error"
+                    ]
                 ),
             }
         )
@@ -2225,6 +2908,7 @@ def run_demo(args: argparse.Namespace) -> None:
             physics_condition if doc_reference is None else doc_reference.reference_id
         ),
         tracking_mode=args.tracking_mode,
+        tracking_variable=args.tracking_variable,
         total_time_s=total_time_s,
         tracking=tracking,
         checkpoint_tracking=checkpoint_tracking,
@@ -3830,6 +4514,15 @@ def parse_args() -> argparse.Namespace:
         choices=TRACKING_LOSSES,
         default="mse",
         help="target tracking loss only; other controller penalties are unchanged",
+    )
+    parser.add_argument(
+        "--tracking-variable",
+        choices=TRACKING_VARIABLES,
+        default="doc",
+        help=(
+            "target-side tracking coordinate: historical DoC (default) or "
+            "reaction progress; non-target penalties are unchanged"
+        ),
     )
     parser.add_argument(
         "--huber-delta",

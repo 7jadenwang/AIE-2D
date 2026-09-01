@@ -14,10 +14,23 @@ from doc_reference import DoCReferenceCurve
 TRACKING_MODES = ("curve", "sampled-curve", "checkpoints")
 SPATIAL_DEFINITIONS = ("pixelwise", "target-mean")
 TRACKING_LOSSES = ("mse", "mae", "huber")
+TRACKING_VARIABLES = ("doc", "reaction-progress")
 
 
 class TrackingConfigurationError(ValueError):
     """Raised before optimization when a tracking specification is inconsistent."""
+
+
+def doc_to_reaction_progress(required_doc: float) -> float:
+    """Convert a finite DoC requirement in ``[0, 1)`` to reaction progress."""
+
+    value = float(required_doc)
+    if not math.isfinite(value) or value < 0 or value >= 1:
+        raise TrackingConfigurationError(
+            "reaction-progress tracking requires every requested DoC to be "
+            f"finite and in [0, 1); got {required_doc!r}"
+        )
+    return -math.log1p(-value)
 
 
 def parse_float_list(text: str | None, *, label: str) -> tuple[float, ...]:
@@ -118,6 +131,7 @@ class TrackingSpecification:
     tracking_loss: str = "mse"
     huber_delta: float = 0.1
     source: str = "curve_artifact"
+    tracking_variable: str = "doc"
 
     def __post_init__(self) -> None:
         if self.tracking_mode not in TRACKING_MODES:
@@ -126,6 +140,10 @@ class TrackingSpecification:
             raise TrackingConfigurationError(f"tracking spatial definition must be one of {SPATIAL_DEFINITIONS}")
         if self.tracking_loss not in TRACKING_LOSSES:
             raise TrackingConfigurationError(f"tracking loss must be one of {TRACKING_LOSSES}")
+        if self.tracking_variable not in TRACKING_VARIABLES:
+            raise TrackingConfigurationError(
+                f"tracking variable must be one of {TRACKING_VARIABLES}"
+            )
         if not math.isfinite(self.huber_delta) or self.huber_delta <= 0:
             raise TrackingConfigurationError("Huber delta must be finite and positive")
         if self.tracking_mode == "curve":
@@ -150,6 +168,9 @@ class TrackingSpecification:
             raise TrackingConfigurationError("sparse tracking times must be strictly increasing and unique")
         if any(not math.isfinite(value) or not 0 <= value <= 1 for value in self.point_values):
             raise TrackingConfigurationError("tracking DoC values must be finite and in [0,1]")
+        if self.tracking_variable == "reaction-progress":
+            for value in self.point_values:
+                doc_to_reaction_progress(value)
         if self.point_weights and any(not math.isfinite(weight) or weight <= 0 for weight in self.point_weights):
             raise TrackingConfigurationError("point weights must be finite and positive")
 
@@ -160,6 +181,7 @@ class TrackingSpecification:
         *,
         spatial_definition: str = "pixelwise",
         tracking_loss: str = "mse",
+        tracking_variable: str = "doc",
         huber_delta: float = 0.1,
     ) -> "TrackingSpecification":
         return cls(
@@ -167,6 +189,7 @@ class TrackingSpecification:
             reference_curve=reference_curve,
             spatial_definition=spatial_definition,
             tracking_loss=tracking_loss,
+            tracking_variable=tracking_variable,
             huber_delta=huber_delta,
             source="curve_artifact",
         )
@@ -180,6 +203,7 @@ class TrackingSpecification:
         point_weights: Sequence[float] = (),
         spatial_definition: str = "pixelwise",
         tracking_loss: str = "mse",
+        tracking_variable: str = "doc",
         huber_delta: float = 0.1,
     ) -> "TrackingSpecification":
         times = tuple(float(value) for value in times_s)
@@ -192,6 +216,7 @@ class TrackingSpecification:
             point_weights=tuple(float(value) for value in point_weights),
             spatial_definition=spatial_definition,
             tracking_loss=tracking_loss,
+            tracking_variable=tracking_variable,
             huber_delta=huber_delta,
             source="curve_artifact_sampled_at_explicit_absolute_times",
         )
@@ -204,6 +229,7 @@ class TrackingSpecification:
         point_weights: Sequence[float] = (),
         spatial_definition: str = "pixelwise",
         tracking_loss: str = "mse",
+        tracking_variable: str = "doc",
         huber_delta: float = 0.1,
     ) -> "TrackingSpecification":
         records = tuple((float(time_s), float(doc)) for time_s, doc in checkpoints)
@@ -214,6 +240,7 @@ class TrackingSpecification:
             point_weights=tuple(float(value) for value in point_weights),
             spatial_definition=spatial_definition,
             tracking_loss=tracking_loss,
+            tracking_variable=tracking_variable,
             huber_delta=huber_delta,
             source="collaborator_specification",
         )
@@ -224,6 +251,17 @@ class TrackingSpecification:
         if horizon < 1:
             raise TrackingConfigurationError("horizon must be positive")
         if self.tracking_mode == "curve":
+            if self.tracking_variable == "reaction-progress":
+                assert self.reference_curve is not None
+                realized_steps = int(round(total_time_s / control_dt_s))
+                last_predicted_time = total_time_s + (horizon - 1) * control_dt_s
+                times = control_dt_s * np.arange(
+                    1, realized_steps + horizon, dtype=float
+                )
+                if times.size and times[-1] > last_predicted_time + 1e-9:
+                    raise AssertionError("dense tracking validation exceeded final horizon")
+                for value in np.asarray(self.reference_curve.evaluate(times), dtype=float):
+                    doc_to_reaction_progress(float(value))
             return ()
         validate_grid_alignment(self.point_times_s, control_dt_s, label=self.tracking_mode)
         if self.point_times_s[-1] > total_time_s + 1e-9:
@@ -244,6 +282,9 @@ class TrackingSpecification:
         if self.tracking_mode == "curve":
             assert self.reference_curve is not None
             values = np.asarray(self.reference_curve.evaluate(times), dtype=float)
+            if self.tracking_variable == "reaction-progress":
+                for value in values:
+                    doc_to_reaction_progress(float(value))
             return StageTrackingSchedule(times, values, np.ones(horizon, dtype=bool), np.ones(horizon, dtype=float))
         values = np.zeros(horizon, dtype=float)
         active = np.zeros(horizon, dtype=bool)
@@ -275,6 +316,7 @@ class TrackingSpecification:
             "non_target_penalty_stage_policy": "all_prediction_stages",
             "spatial_definition": self.spatial_definition,
             "tracking_loss": self.tracking_loss,
+            "tracking_variable": self.tracking_variable,
             "huber_delta": self.huber_delta if self.tracking_loss == "huber" else None,
             "curve_reference": None if self.reference_curve is None else self.reference_curve.provenance_metadata(),
         }

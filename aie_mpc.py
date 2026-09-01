@@ -107,6 +107,7 @@ class DifferentiableMPC:
         self.model = model
         self.target = target
         self.tracking_specification = tracking_specification
+        self.tracking_variable = tracking_specification.tracking_variable
         self.reference_curve = tracking_specification.reference_curve
         self.tracking_mode = tracking_specification.tracking_mode
         self.checkpoints = tuple(
@@ -345,17 +346,44 @@ class DifferentiableMPC:
             zip(predicted_states, desired_doc_stages)
         ):
             if bool(target_tracking_active[stage_index]):
-                if self.tracking_specification.spatial_definition == "pixelwise":
-                    error = predicted_state.doc - desired_doc
-                    stage_cost = self._masked_mean(
-                        self._tracking_loss(error), self.target_region
-                    )
+                if self.tracking_variable == "doc":
+                    # Keep the original DoC-coordinate objective unchanged.
+                    if self.tracking_specification.spatial_definition == "pixelwise":
+                        error = predicted_state.doc - desired_doc
+                        stage_cost = self._masked_mean(
+                            self._tracking_loss(error), self.target_region
+                        )
+                    else:
+                        target_mean = self._masked_mean(
+                            predicted_state.doc, self.target_region
+                        )
+                        error = target_mean - stage_reference[stage_index]
+                        stage_cost = self._tracking_loss(error)
                 else:
-                    target_mean = self._masked_mean(
-                        predicted_state.doc, self.target_region
-                    )
-                    error = target_mean - stage_reference[stage_index]
-                    stage_cost = self._tracking_loss(error)
+                    # Reaction-progress tracking removes the extra (1 - DoC)
+                    # saturation factor from the target-loss gradient near high
+                    # DoC. It does not cure the separate zero-gradient inhibited
+                    # branch, where reaction_progress itself remains zero.
+                    if self.tracking_specification.spatial_definition == "pixelwise":
+                        desired_reaction_progress = self._doc_to_reaction_progress(
+                            desired_doc
+                        )
+                        error = (
+                            predicted_state.reaction_progress
+                            - desired_reaction_progress
+                        )
+                        stage_cost = self._masked_mean(
+                            self._tracking_loss(error), self.target_region
+                        )
+                    else:
+                        target_mean = self._masked_mean(
+                            predicted_state.reaction_progress, self.target_region
+                        )
+                        desired_reaction_progress = self._doc_to_reaction_progress(
+                            stage_reference[stage_index]
+                        )
+                        error = target_mean - desired_reaction_progress
+                        stage_cost = self._tracking_loss(error)
                 target_stage_costs.append(
                     stage_tracking_weights[stage_index] * stage_cost
                 )
@@ -404,6 +432,16 @@ class DifferentiableMPC:
             0.5 * error.square(),
             delta * (absolute - 0.5 * delta),
         )
+
+    @staticmethod
+    def _doc_to_reaction_progress(required_doc: torch.Tensor) -> torch.Tensor:
+        """Map a validated DoC target to R using stable differentiable math."""
+
+        if bool(torch.any(required_doc >= 1.0)):
+            raise ValueError(
+                "reaction-progress tracking requires requested DoC values below 1"
+            )
+        return -torch.log1p(-required_doc)
 
     def shift_warm_start(self, optimized_controls: torch.Tensor) -> torch.Tensor:
         """Shift ``[u0, u1, ..., uN]`` to ``[u1, ..., uN, uN]``."""
