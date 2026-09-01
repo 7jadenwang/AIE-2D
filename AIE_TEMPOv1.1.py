@@ -28,7 +28,7 @@ print('Working Device:',device)
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
     firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
     intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
-    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.90 * target),'fro')
+    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.40 * target),'fro')
     #FinalLoss=F.mse_loss(finalDoC, target)
     return finalLoss#+intermediateLoss
     #return firstLoss + intermediateLoss + finalLoss
@@ -150,10 +150,10 @@ pre_cap=0.015 #ceiling on that pre-cure creep before real curing starts
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(9/dt)
+total_steps=int(4/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(9 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(4 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=33.8011 #(26/09/01)
@@ -194,7 +194,7 @@ target=(target/max_val).astype(np.float32) #Normalize to [0,1]
 H,W=target.shape
 DoC_radius=25
 mask=torch.tensor(target.copy() * 255, dtype=torch.float32, device=device) # scale to [0,255] to match /255 in physics
-opt_mask=torch.nn.Parameter(mask.clone()) #shape(H,W)
+opt_mask=torch.nn.Parameter(mask.clone()*3) #shape(H,W)
 
 grayscale_floor=15.0  #Zak needs it
 # min opt_mask value enforced inside the cure zone, so cured pixels never rely 100% on scatter
@@ -241,7 +241,7 @@ ls_pad=ls_kernel_size//2
 
 #Gradient smoothing kernel (optimization aid when blur_size==0; independent of physical scattering)
 grad_smooth_sigma=2.0 # unit in pixels
-grad_smooth_kernel_size=int(grad_smooth_sigma*6)|1
+grad_smooth_kernel_size=int(grad_smooth_sigma*6)
 grad_smooth_kernel_np=cv2.getGaussianKernel(grad_smooth_kernel_size,grad_smooth_sigma)
 grad_smooth_kernel=torch.from_numpy(np.outer(grad_smooth_kernel_np,grad_smooth_kernel_np)).view(1,1,grad_smooth_kernel_size,grad_smooth_kernel_size).to(torch.float32).to(device)
 grad_smooth_pad=grad_smooth_kernel_size//2
@@ -315,7 +315,7 @@ for epoch in range(numEpochs):
         t=Dosenext/(blur_mask.clamp(min=1e-12)/255*intensity)
     
         #DoCnext= 1-torch.exp(-B*(t-C).clamp(min=0))
-        x = cum_light + energy
+        cum_light = cum_light + energy
         pre_cure = (pre_slope * cum_light).clamp(0, pre_cap) #slight upward creep while O2/TEMPO still inhibiting
         DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(-(B*t).clamp(min=0)), pre_cure)
         #DoCnext = DoCnext - O2next * 0.002 + 0.005
