@@ -15,8 +15,8 @@ imagesD=[]
 imagesO=[]
 imagesT=[]
 
-#folder_name = 'test_repro'
-folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
+folder_name = 'test_repro'
+#folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
 os.makedirs(save_path, exist_ok=True)
@@ -28,7 +28,7 @@ print('Working Device:',device)
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
     firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
     intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
-    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.40 * target),'fro')
+    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.90 * target),'fro')
     #FinalLoss=F.mse_loss(finalDoC, target)
     return finalLoss#+intermediateLoss
     #return firstLoss + intermediateLoss + finalLoss
@@ -144,24 +144,26 @@ TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 
 intensity=70 #mW/cm2
 #Change intensity with different data pls
-chainGrowth_noise_std=0.0 #relative std of quenched per-pixel randomness in local cure rate B
+
+pre_slope=2e-3 #DoC per mJ/cm2 of delivered light: slight upward creep during O2/TEMPO inhibition
+pre_cap=0.015 #ceiling on that pre-cure creep before real curing starts
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(5.5/dt)
+total_steps=int(9/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(5.0 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(9 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
-O2inhibition=27.7117
+O2inhibition=33.8011 #(26/09/01)
+#O2inhibition=27.7117 #(26/07/25)
 # 0 for no O2 inhibition
-#10.452 for 0mmol TEMPO concentration O2 only
-#Total_inhibition_time=4.239 # from experimental data
+
 Totalinhibtion=0
 #0 for no TEMPO inhibition
-#51.7456 for 1mmol TEMPO concentration
-#119.7295 for 5mmol TEMPO concentration
+#119.7295 for 5mmol TEMPO concentration (26/07/25)
+#116.1840 for 5mmol TEMPO concentration (26/09/01)
 
 
 #TEMPO_inibition_Time=Total_inhibition_time - O2_inhibition_time
@@ -270,16 +272,17 @@ for epoch in range(numEpochs):
     TEMPO=[(torch.ones((H,W))*(TEMPOinhibition)).to(torch.float32).to(device)]
     Dose=[torch.zeros((H,W)).to(torch.float32).to(device)]
     DoC=[torch.zeros((H,W)).to(torch.float32).to(device)]
+    cum_light=torch.zeros((H,W)).to(torch.float32).to(device) #running light dose per pixel, for pre-cure ramp
 
-    # A = -0.0231*(blur_mask.clamp(min=1e-12)/255 * intensity) + 2.044
-    B = 0.0133*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4638 #0mMTEMPO
-    # B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO
-    # B =0.0069*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3815 #5mMTEMPO
-    if chainGrowth_noise_std > 0:
-        B_noise=(1 + chainGrowth_noise_std * torch.randn(H, W, device=device)).clamp(min=1e-3)
-        B = B * B_noise
+    
+    #B = 0.0133*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4638 #0mMTEMPO (26/07/25)
+     #B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO Never updated for 1mM
+    #B =0.0069*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3815 #5mMTEMPO (26/07/25)
 
-    #C=O2inhibition/(blur_mask.clamp(min=1e-12)/255*intensity)
+    B = 0.0121*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.5623 #0mMTEMPO (26/09/01)
+    #B = 0.0108*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.2541 #5mMTEMPO (26/09/01)
+    
+
     #print(B[H//2,W//2].item()) # for debug
 
     # absorption coefficient, mJ/cm2
@@ -312,7 +315,10 @@ for epoch in range(numEpochs):
         t=Dosenext/(blur_mask.clamp(min=1e-12)/255*intensity)
     
         #DoCnext= 1-torch.exp(-B*(t-C).clamp(min=0))
-        DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(-(B*t).clamp(min=0)), DoC[-1])
+        x = cum_light + energy
+        pre_cure = (pre_slope * cum_light).clamp(0, pre_cap) #slight upward creep while O2/TEMPO still inhibiting
+        DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(-(B*t).clamp(min=0)), pre_cure)
+        #DoCnext = DoCnext - O2next * 0.002 + 0.005
         #DoCnext=torch.where((O2next<=0) & (TEMPOnext<=0), 1-torch.exp(B*(-t)), DoC[-1])
         
         '''
@@ -322,6 +328,7 @@ for epoch in range(numEpochs):
         DoCnext.clamp_(min=0,max=1) # O2>0 means no cure can start
         #DoCnext = DoCnext - O2next * 0.005 + 0.005
         '''
+
         DoC.append(DoCnext)
         if epoch==numEpochs-1: # for the final epoch
             if step%2==0:

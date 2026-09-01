@@ -1,5 +1,6 @@
 /.claude
 /Note
+/260728_circles
 /.codex
 /.worktrees
 /.vscode
@@ -30,6 +31,7 @@
 /__pycache__
 /test_repro
 /.DS_Store
+/PastDataFiles
 
 # generated simulation/optimization output images (AIE_TEMPOv1.1.py), any run folder
 **/aaa_*.png
@@ -39,5 +41,3 @@
 **/allDoC.gif
 **/allO2.gif
 **/allTEMPO.gif
-
-**/*.zip
