@@ -1,0 +1,557 @@
+{
+  "schema_version": 1,
+  "tracking_variable": "reaction-progress",
+  "primary_result_grid": "native",
+  "tracking_specification": {
+    "tracking_mode": "checkpoints",
+    "tracking_reference_type": "explicit_checkpoints",
+    "tracking_reference_source": "collaborator_specification",
+    "tracking_times_s": [
+      6.0
+    ],
+    "tracking_values": [
+      0.9
+    ],
+    "point_weights": [
+      1.0
+    ],
+    "point_weighting": "equal",
+    "target_tracking_stage_policy": "only_exact_configured_absolute_times",
+    "non_target_penalty_stage_policy": "all_prediction_stages",
+    "spatial_definition": "pixelwise",
+    "tracking_loss": "mse",
+    "tracking_variable": "reaction-progress",
+    "huber_delta": null,
+    "curve_reference": null
+  },
+  "reference_provenance": null,
+  "forward_model_provenance": {
+    "source": "AIE_TEMPOv1.1.py",
+    "sha256": "4c37355a1018d77dea2a16cb083a1eed5939f1ddc51c1fd06527ac671e582e28",
+    "selector": "70mW_0mM",
+    "resolved_source_mode": "active_authoritative",
+    "value_sources": {
+      "intensity": "active assignment",
+      "o2_inhibition": "active assignment",
+      "total_inhibition": "active assignment",
+      "tempo_inhibition": "derived from active assignments",
+      "b_law": "active expression",
+      "dt": "active assignment",
+      "pixel_pitch": "active assignment",
+      "o2_diffusivity": "active assignment",
+      "tempo_diffusivity": "active assignment",
+      "scattering": "active assignment"
+    },
+    "history_mode": "incremental_reaction_progress_v1",
+    "history_description": "MPC-side time-varying extension; exactly reduces to the reference B/intensity DoC law at constant intensity and is not separately experimentally calibrated",
+    "tracking_reference_physics_match": {
+      "matched": true,
+      "tracking_reference_type": "explicit_checkpoints",
+      "tracking_reference_source": "collaborator_specification",
+      "forward_condition_id": "70mW_0mM",
+      "forward_intensity_mw_cm2": 70.0,
+      "forward_tempo_concentration_mM": 0.0,
+      "override_used": false
+    }
+  },
+  "target": {
+    "name": "Sync_rect.png",
+    "path": "C:\\uSLS\\AIE-2D-David\\GEO\\Sync_rect.png",
+    "shape": [
+      320,
+      512
+    ],
+    "target_threshold": 0.5
+  },
+  "initialization": {
+    "mode": "uniform",
+    "heuristic_only": false,
+    "initial_target_level": 0.95,
+    "initial_background_level": 0.02
+  },
+  "total_process_time_s": 6.0,
+  "final_geometry_reference": {
+    "doc": 0.9,
+    "source": "last_sparse_requirement_at_or_before_total_time"
+  },
+  "control_settings": {
+    "dt_s": 0.05,
+    "physics_steps_per_control": 10,
+    "control_dt_s": 0.5,
+    "control_steps": 12,
+    "horizon": 12,
+    "prediction_horizon_seconds": 6.0,
+    "target_weight": 1.0,
+    "outside_weight": 0.5,
+    "energy_weight": 0.0001,
+    "smoothness_weight": 0.01
+  },
+  "target_region_doc_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "mean_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.12131430953741074,
+      0.37726378440856934,
+      0.5662787556648254,
+      0.7008772492408752,
+      0.7930583357810974,
+      0.8563483953475952,
+      0.8999833464622498
+    ],
+    "min_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.20482337474822998,
+      0.4512065649032593,
+      0.6107298135757446,
+      0.722847580909729,
+      0.802573561668396,
+      0.8593933582305908,
+      0.9028924703598022
+    ],
+    "std_target_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0558326318860054,
+      0.10918968915939331,
+      0.07719279825687408,
+      0.0370045080780983,
+      0.01561789307743311,
+      0.005898989737033844,
+      0.0036612097173929214
+    ],
+    "lower_error": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.12131430953741074,
+      0.37726378440856934,
+      0.5662787556648254,
+      0.7008772492408752,
+      0.7930583357810974,
+      0.8563483953475952,
+      0.8999833464622498
+    ],
+    "upper_error": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.08350906521081924,
+      0.07394278049468994,
+      0.04445105791091919,
+      0.02197033166885376,
+      0.009515225887298584,
+      0.0030449628829956055,
+      0.0029091238975524902
+    ],
+    "mean_outside_doc": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      5.767002676293487e-06,
+      2.0045763449161313e-05,
+      3.539282624842599e-05,
+      4.367331348476e-05,
+      5.051684638601728e-05
+    ]
+  },
+  "target_region_reaction_progress_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "requested_reaction_progress": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      2.302585092994046
+    ],
+    "mean_target_reaction_progress": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.13123054802417755,
+      0.485621839761734,
+      0.8471791744232178,
+      1.2130526304244995,
+      1.5777347087860107,
+      1.940946102142334,
+      2.3025307655334473
+    ],
+    "min_target_reaction_progress": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_target_reaction_progress": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.22919103503227234,
+      0.6000332236289978,
+      0.9434817433357239,
+      1.2831876277923584,
+      1.622389316558838,
+      1.9617888927459717,
+      2.3319363594055176
+    ],
+    "std_target_reaction_progress": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.06077205762267113,
+      0.14551478624343872,
+      0.14307904243469238,
+      0.10510389506816864,
+      0.06698502600193024,
+      0.03255220502614975,
+      0.009446056559681892
+    ],
+    "reaction_progress_error": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      -5.432746059863547e-05
+    ]
+  },
+  "target_region_o2_timeline_mj_cm2": {
+    "units": "mJ/cm^2",
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0,
+      4.5,
+      5.0,
+      5.5,
+      6.0
+    ],
+    "target_o2_mean": [
+      29.09910774230957,
+      24.14553451538086,
+      19.56047248840332,
+      14.151782989501953,
+      7.730895042419434,
+      0.4743918776512146,
+      0.08739504963159561,
+      0.0003848023188766092,
+      0.00037120666820555925,
+      0.0003578208270482719,
+      0.0003446039336267859,
+      0.000331525836372748
+    ],
+    "target_o2_min": [
+      18.09954833984375,
+      15.39745044708252,
+      14.523164749145508,
+      10.307144165039062,
+      5.947783470153809,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_o2_max": [
+      30.75921058654785,
+      28.907039642333984,
+      27.793458938598633,
+      26.797685623168945,
+      25.867326736450195,
+      24.978639602661133,
+      24.118820190429688,
+      23.280155181884766,
+      22.457632064819336,
+      21.647802352905273,
+      20.848194122314453,
+      20.056982040405273
+    ],
+    "target_o2_std": [
+      0.3811073899269104,
+      0.7454806566238403,
+      0.7972825169563293,
+      1.0424048900604248,
+      1.609107494354248,
+      1.5622786283493042,
+      0.5223280191421509,
+      0.09464728832244873,
+      0.091303251683712,
+      0.08801084756851196,
+      0.08475996553897858,
+      0.0815432220697403
+    ]
+  },
+  "temporal_tracking": null,
+  "temporal_reaction_progress_tracking": null,
+  "sparse_tracking": {
+    "tracking_variable": "reaction-progress",
+    "times_s": [
+      6.0
+    ],
+    "requested_doc": [
+      0.9
+    ],
+    "achieved_doc": [
+      0.8999833464622498
+    ],
+    "mean_target_doc": [
+      0.8999833464622498
+    ],
+    "min_target_doc": [
+      0.0
+    ],
+    "max_target_doc": [
+      0.9028924703598022
+    ],
+    "std_target_doc": [
+      0.0036612097173929214
+    ],
+    "lower_error": [
+      0.8999833464622498
+    ],
+    "upper_error": [
+      0.0029091238975524902
+    ],
+    "errors": [
+      -1.6653537750266345e-05
+    ],
+    "requested_reaction_progress": [
+      2.302585092994046
+    ],
+    "mean_target_reaction_progress": [
+      2.3025307655334473
+    ],
+    "min_target_reaction_progress": [
+      0.0
+    ],
+    "max_target_reaction_progress": [
+      2.3319363594055176
+    ],
+    "std_target_reaction_progress": [
+      0.009446056559681892
+    ],
+    "reaction_progress_error": [
+      -5.432746059863547e-05
+    ],
+    "reaction_progress_rmse": 5.432746059863547e-05,
+    "reaction_progress_mae": 5.432746059863547e-05,
+    "reaction_progress_max_absolute_error": 5.432746059863547e-05,
+    "target_o2_mean": [
+      0.000331525836372748
+    ],
+    "target_o2_min": [
+      0.0
+    ],
+    "target_o2_max": [
+      20.056982040405273
+    ],
+    "target_o2_std": [
+      0.0815432220697403
+    ],
+    "target_o2_units": "mJ/cm^2",
+    "rmse": 1.6653537750266345e-05,
+    "mae": 1.6653537750266345e-05,
+    "max_absolute_error": 1.6653537750266345e-05,
+    "table_path": "doc_tracking_points.csv"
+  },
+  "soft_doc": {
+    "full_image_rmse": 0.002338453363251443,
+    "target_region_rmse": 0.0036612482649421483,
+    "outside_region_rmse": 0.0009067338407350037,
+    "full_image_mae": 4.5746243413305935e-05
+  },
+  "geometry": {
+    "threshold": 0.5,
+    "threshold_interpretation": "Computational segmentation threshold only; not claimed as an experimentally calibrated gel-point threshold.",
+    "target_threshold": 0.5,
+    "iou": 0.9999834708011702,
+    "dice": 0.9999917353322809,
+    "precision": 1.0,
+    "recall": 0.9999834708011702,
+    "undercure_fraction": 1.652919882973272e-05,
+    "overcure_fraction_target_normalized": 0.0,
+    "overcure_fraction_image": 0.0,
+    "area_error_fraction": -1.652919882973272e-05,
+    "pixel_counts": {
+      "image_area": 163840,
+      "target_area": 60499,
+      "cured_area": 60498,
+      "true_positive": 60498,
+      "false_positive": 0,
+      "false_negative": 1
+    }
+  },
+  "boundary": {
+    "status": "ok",
+    "mean_symmetric_distance_px": 0.006943239021003298,
+    "mean_symmetric_distance_um": 0.052768616559625066,
+    "p95_symmetric_distance_px": 0.0,
+    "p95_symmetric_distance_um": 0.0
+  },
+  "components": {
+    "count": 19,
+    "component_mean_doc_mean": 0.8525454797188751,
+    "component_mean_doc_min": 0.0,
+    "component_mean_doc_max": 0.8999993972876417,
+    "worst_mean_doc": 0.0,
+    "worst_mean_doc_component_id": 1,
+    "worst_cured_fraction": 0.0,
+    "worst_cured_fraction_component_id": 1,
+    "worst_undercure_fraction": 1.0,
+    "worst_undercure_component_id": 1,
+    "table_path": "component_metrics.csv"
+  },
+  "holes": {
+    "count": 0,
+    "total_hole_pixels": 0,
+    "cured_fraction": 0.0,
+    "mean_doc": 0.0,
+    "p95_doc": 0.0,
+    "max_doc": 0.0,
+    "details": []
+  },
+  "baseline_comparison": {
+    "enabled": true,
+    "label": "unoptimized repeated target-mask baseline",
+    "baseline_metrics_path": "baseline_target_mask/metrics.json",
+    "comparison_point": {
+      "time_s": 6.0,
+      "requested_doc": 0.9,
+      "selection": "last sparse tracking point"
+    },
+    "metrics": {
+      "checkpoint_mean_doc": {
+        "mpc": 0.8999833464622498,
+        "baseline": 0.9976040720939636
+      },
+      "checkpoint_absolute_error": {
+        "mpc": 1.6653537750266345e-05,
+        "baseline": 0.0976040720939636
+      },
+      "tracking_doc_rmse": {
+        "mpc": 1.6653537750266345e-05,
+        "baseline": 0.0976040720939636
+      },
+      "target_doc_rmse": {
+        "mpc": 0.0036612482649421483,
+        "baseline": 0.10399054763508467
+      },
+      "target_doc_std": {
+        "mpc": 0.0036612097173929214,
+        "baseline": 0.03588205575942993
+      },
+      "component_mean_doc_min": {
+        "mpc": 0.0,
+        "baseline": 0.0
+      },
+      "component_mean_doc_max": {
+        "mpc": 0.8999993972876417,
+        "baseline": 0.9990580182285126
+      },
+      "mean_outside_doc": {
+        "mpc": 5.051684638601728e-05,
+        "baseline": 0.0
+      },
+      "iou": {
+        "mpc": 0.9999834708011702,
+        "baseline": 0.9987272516901106
+      },
+      "dice": {
+        "mpc": 0.9999917353322809,
+        "baseline": 0.9993632206151123
+      }
+    }
+  }
+}

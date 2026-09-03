@@ -191,6 +191,21 @@ class ResolutionConfig:
         )
 
 
+@dataclass(frozen=True)
+class TargetMaskBaselineResult:
+    """Outputs from the unoptimized repeated target-mask forward rollout."""
+
+    final_state: AIEState
+    timeline: dict[str, np.ndarray]
+    initial_target_doc_summary: dict[str, float]
+    initial_target_o2_summary: dict[str, float]
+    tracking: dict[str, float]
+    tracking_points: dict[str, object]
+    final_metrics: dict[str, object]
+    metrics_document: dict[str, object]
+    output_dir: Path
+
+
 def build_resolution_config(
     resolution_mode: str,
     coarsen_factor: int,
@@ -490,8 +505,10 @@ def replay_native_controls(
     doc_frame_callback: Callable[[int, torch.Tensor], None] | None = None,
     authoritative_reference: object | None = None,
     state_callback: Callable[[int, AIEState], None] | None = None,
+    native_model: AIEModel | None = None,
+    initial_state: AIEState | None = None,
 ) -> AIEState:
-    """Replay recovered masks through a fresh native model without optimization."""
+    """Replay recovered masks through the resolved native forward model."""
 
     current_reference_params = AIEParameters.from_reference(
         authoritative_reference or load_reference_config()
@@ -507,8 +524,23 @@ def replay_native_controls(
             f"native replay shape must contain two positive dimensions, got "
             f"{native_shape}"
         )
-    native_model = AIEModel(native_params, device=device)
-    native_state = native_model.initialize_state(native_shape)
+    if native_model is None:
+        native_model = AIEModel(native_params, device=device)
+    elif native_model.params != native_params or native_model.device != device:
+        raise ValueError(
+            "reused native model must have the requested authoritative parameters "
+            "and device"
+        )
+    native_state = (
+        native_model.initialize_state(native_shape)
+        if initial_state is None
+        else initial_state.detach()
+    )
+    if tuple(native_state.shape) != native_shape:
+        raise ValueError(
+            f"native replay initial state has shape {tuple(native_state.shape)}, "
+            f"expected {native_shape}"
+        )
     if doc_frame_callback is not None:
         doc_frame_callback(0, native_state.doc)
     if state_callback is not None:
@@ -1011,6 +1043,533 @@ def save_component_metrics_csv(rows: list[dict[str, object]], path: Path) -> Non
         writer.writerows(rows)
 
 
+def tracking_points_metadata(
+    tracking: dict[str, object],
+    *,
+    tracking_variable: str,
+    table_path: str | None,
+) -> dict[str, object]:
+    """Convert shared tracking-point statistics to JSON-safe metadata."""
+
+    return {
+        "tracking_variable": tracking_variable,
+        "times_s": tracking["times_s"].tolist(),
+        "requested_doc": tracking["requested_doc"].tolist(),
+        "achieved_doc": tracking["achieved_doc"].tolist(),
+        "mean_target_doc": tracking["mean_target_doc"].tolist(),
+        "min_target_doc": tracking["min_target_doc"].tolist(),
+        "max_target_doc": tracking["max_target_doc"].tolist(),
+        "std_target_doc": tracking["std_target_doc"].tolist(),
+        "lower_error": tracking["lower_error"].tolist(),
+        "upper_error": tracking["upper_error"].tolist(),
+        "errors": tracking["errors"].tolist(),
+        "requested_reaction_progress": json_safe_float_list(
+            tracking["requested_reaction_progress"]
+        ),
+        "mean_target_reaction_progress": tracking[
+            "mean_target_reaction_progress"
+        ].tolist(),
+        "min_target_reaction_progress": tracking[
+            "min_target_reaction_progress"
+        ].tolist(),
+        "max_target_reaction_progress": tracking[
+            "max_target_reaction_progress"
+        ].tolist(),
+        "std_target_reaction_progress": tracking[
+            "std_target_reaction_progress"
+        ].tolist(),
+        "reaction_progress_error": json_safe_float_list(
+            tracking["reaction_progress_error"]
+        ),
+        "reaction_progress_rmse": tracking["reaction_progress_rmse"],
+        "reaction_progress_mae": tracking["reaction_progress_mae"],
+        "reaction_progress_max_absolute_error": tracking[
+            "reaction_progress_max_absolute_error"
+        ],
+        "target_o2_mean": tracking["target_o2_mean"].tolist(),
+        "target_o2_min": tracking["target_o2_min"].tolist(),
+        "target_o2_max": tracking["target_o2_max"].tolist(),
+        "target_o2_std": tracking["target_o2_std"].tolist(),
+        "target_o2_units": "mJ/cm^2",
+        "rmse": tracking["rmse"],
+        "mae": tracking["mae"],
+        "max_absolute_error": tracking["max_absolute_error"],
+        "table_path": table_path,
+    }
+
+
+def run_unoptimized_target_mask_baseline(
+    *,
+    model: AIEModel,
+    initial_state: AIEState,
+    target_native: torch.Tensor,
+    control_times_s: np.ndarray,
+    reference_doc: np.ndarray,
+    checkpoints: tuple[tuple[float, float], ...],
+    tracking_mode: str,
+    tracking_variable: str,
+    reference_final_doc: float,
+    target_threshold: float,
+    geometry_threshold: float,
+    pixel_pitch_um: float,
+    physics_steps_per_control: int,
+    output_dir: Path,
+    resolution_mode: str,
+    physics_condition: str,
+    authoritative_reference: aie_reference.ReferenceConfig,
+    tracking_specification_metadata: dict[str, object],
+) -> TargetMaskBaselineResult:
+    """Run and report ``u_k(x,y) = M(x,y)`` with no optimization."""
+
+    baseline_label = "unoptimized repeated target-mask baseline"
+    require_native_target(target_native)
+    control_times_s = np.asarray(control_times_s, dtype=float)
+    reference_doc = np.asarray(reference_doc, dtype=float)
+    if (
+        control_times_s.ndim != 1
+        or control_times_s.size < 1
+        or reference_doc.shape != control_times_s.shape
+    ):
+        raise ValueError(
+            "baseline control times and requested DoC must be equal nonempty 1D arrays"
+        )
+    expected_control_dt_s = model.params.dt * physics_steps_per_control
+    expected_times_s = expected_control_dt_s * np.arange(
+        1, control_times_s.size + 1, dtype=float
+    )
+    if not np.allclose(control_times_s, expected_times_s, rtol=0.0, atol=1e-9):
+        raise ValueError("baseline must use the MPC physical/control time grid")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fixed_control = target_native.detach().clone()
+    save_grayscale(fixed_control, output_dir / "target_mask_baseline.png")
+
+    timeline_lists: dict[str, list[float]] = {
+        "mean_target_doc": [],
+        "min_target_doc": [],
+        "max_target_doc": [],
+        "std_target_doc": [],
+        "mean_outside_doc": [],
+        "mean_target_reaction_progress": [],
+        "min_target_reaction_progress": [],
+        "max_target_reaction_progress": [],
+        "std_target_reaction_progress": [],
+        "target_o2_mean": [],
+        "target_o2_min": [],
+        "target_o2_max": [],
+        "target_o2_std": [],
+    }
+    initial_summaries: dict[str, dict[str, float]] = {}
+    doc_frame_paths: list[Path] = []
+
+    def record_baseline_state(frame_index: int, state: AIEState) -> None:
+        frame_path = output_dir / f"doc_frame_native_{frame_index:03d}.png"
+        save_doc_frame(state.doc, frame_path, tuple(target_native.shape))
+        doc_frame_paths.append(frame_path)
+        doc_summary = doc_region_summary(
+            state.doc, target_native, target_threshold
+        )
+        o2_summary = target_field_summary(
+            state.o2,
+            target_native,
+            target_threshold,
+            label="baseline O2",
+        )
+        if frame_index == 0:
+            initial_summaries["doc"] = doc_summary
+            initial_summaries["o2"] = o2_summary
+            return
+        reaction_summary = target_field_summary(
+            state.reaction_progress,
+            target_native,
+            target_threshold,
+            label="baseline reaction_progress",
+        )
+        timeline_lists["mean_target_doc"].append(doc_summary["mean_target_doc"])
+        timeline_lists["min_target_doc"].append(doc_summary["min_target_doc"])
+        timeline_lists["max_target_doc"].append(doc_summary["max_target_doc"])
+        timeline_lists["std_target_doc"].append(doc_summary["std_target_doc"])
+        timeline_lists["mean_outside_doc"].append(doc_summary["mean_outside_doc"])
+        timeline_lists["mean_target_reaction_progress"].append(
+            reaction_summary["mean"]
+        )
+        timeline_lists["min_target_reaction_progress"].append(
+            reaction_summary["min"]
+        )
+        timeline_lists["max_target_reaction_progress"].append(
+            reaction_summary["max"]
+        )
+        timeline_lists["std_target_reaction_progress"].append(
+            reaction_summary["std"]
+        )
+        timeline_lists["target_o2_mean"].append(o2_summary["mean"])
+        timeline_lists["target_o2_min"].append(o2_summary["min"])
+        timeline_lists["target_o2_max"].append(o2_summary["max"])
+        timeline_lists["target_o2_std"].append(o2_summary["std"])
+
+    final_state = replay_native_controls(
+        model.params,
+        tuple(target_native.shape),
+        [fixed_control] * int(control_times_s.size),
+        physics_steps_per_control,
+        model.device,
+        authoritative_reference=authoritative_reference,
+        state_callback=record_baseline_state,
+        native_model=model,
+        initial_state=initial_state,
+    )
+    if set(initial_summaries) != {"doc", "o2"}:
+        raise AssertionError("baseline rollout did not report its initialized state")
+    if len(doc_frame_paths) != control_times_s.size + 1:
+        raise AssertionError("baseline DoC timeline has an unexpected frame count")
+    save_gif_from_frames(
+        doc_frame_paths, output_dir / "doc_evolution_native.gif"
+    )
+    save_grayscale(final_state.doc, output_dir / "final_doc_native.png")
+    save_grayscale(
+        final_state.o2 / max(model.params.o2_inhibition_mj_cm2, 1e-12),
+        output_dir / "final_o2_native.png",
+    )
+
+    timeline = {
+        name: np.asarray(values, dtype=float)
+        for name, values in timeline_lists.items()
+    }
+    if any(values.size != control_times_s.size for values in timeline.values()):
+        raise AssertionError("baseline physical timeline has an unexpected length")
+    requested_reaction_progress = doc_array_to_reaction_progress_for_reporting(
+        reference_doc
+    )
+    reaction_progress_error = (
+        timeline["mean_target_reaction_progress"] - requested_reaction_progress
+    )
+    if tracking_mode == "curve":
+        tracking = temporal_tracking_metrics(
+            timeline["mean_target_doc"], reference_doc
+        )
+        finite_reaction_reference = np.isfinite(requested_reaction_progress)
+        reaction_progress_tracking = (
+            temporal_tracking_metrics(
+                timeline["mean_target_reaction_progress"][finite_reaction_reference],
+                requested_reaction_progress[finite_reaction_reference],
+            )
+            if np.any(finite_reaction_reference)
+            else None
+        )
+        evaluation_points = tuple(
+            zip(control_times_s.tolist(), reference_doc.tolist())
+        )
+    else:
+        evaluation_points = checkpoints
+
+    tracking_points = calculate_checkpoint_tracking(
+        control_times_s,
+        timeline["mean_target_doc"],
+        timeline["min_target_doc"],
+        timeline["max_target_doc"],
+        timeline["std_target_doc"],
+        timeline["mean_target_reaction_progress"],
+        timeline["min_target_reaction_progress"],
+        timeline["max_target_reaction_progress"],
+        timeline["std_target_reaction_progress"],
+        timeline["target_o2_mean"],
+        timeline["target_o2_min"],
+        timeline["target_o2_max"],
+        timeline["target_o2_std"],
+        evaluation_points,
+    )
+    if tracking_mode != "curve":
+        tracking = {
+            "rmse": tracking_points["rmse"],
+            "mae": tracking_points["mae"],
+            "max_absolute_error": tracking_points["max_absolute_error"],
+        }
+        reaction_progress_tracking = (
+            None
+            if tracking_points["reaction_progress_rmse"] is None
+            else {
+                "rmse": tracking_points["reaction_progress_rmse"],
+                "mae": tracking_points["reaction_progress_mae"],
+                "max_absolute_error": tracking_points[
+                    "reaction_progress_max_absolute_error"
+                ],
+            }
+        )
+
+    final_metrics = calculate_final_metrics(
+        final_state.doc.detach().cpu().numpy(),
+        target_native.detach().cpu().numpy(),
+        reference_final_doc,
+        target_threshold,
+        geometry_threshold,
+        pixel_pitch_um,
+    )
+    component_metrics_path = output_dir / "component_metrics.csv"
+    tracking_points_path = output_dir / "doc_tracking_points.csv"
+    save_component_metrics_csv(
+        final_metrics["component_rows"], component_metrics_path
+    )
+    save_tracking_points_csv(
+        tracking_points,
+        tracking_points_path,
+        tracking_variable=tracking_variable,
+    )
+    components_summary = {
+        **final_metrics["components"],
+        "table_path": component_metrics_path.name,
+    }
+    holes_summary = {
+        **final_metrics["holes"],
+        "details": final_metrics["hole_rows"],
+    }
+    metrics_document = {
+        "schema_version": 1,
+        "label": baseline_label,
+        "optimization_performed": False,
+        "control_policy": {
+            "definition": "u_k(x,y) = M(x,y)",
+            "mask_source": "original normalized native target image",
+            "fixed_for_entire_process": True,
+            "control_intervals": int(control_times_s.size),
+            "mask_path": "target_mask_baseline.png",
+        },
+        "initial_state_reused_from_mpc_primary_rollout": True,
+        "tracking_variable": tracking_variable,
+        "tracking_variable_role": "evaluation only; baseline control is independent",
+        "tracking_mode": tracking_mode,
+        "tracking_specification": tracking_specification_metadata,
+        "resolution_mode": resolution_mode,
+        "primary_result_grid": "native",
+        "forward_model_provenance": {
+            "physics_condition": physics_condition,
+            "parameters": model.params.provenance_metadata(),
+            "reference_config": authoritative_reference.to_metadata(),
+            "history_mode": DOC_HISTORY_MODE,
+            "history_description": DOC_HISTORY_DESCRIPTION,
+        },
+        "target": {
+            "shape": list(target_native.shape),
+            "target_threshold": target_threshold,
+            "normalized_min": float(target_native.min()),
+            "normalized_max": float(target_native.max()),
+        },
+        "control_settings": {
+            "dt_s": model.params.dt,
+            "physics_steps_per_control": physics_steps_per_control,
+            "control_dt_s": expected_control_dt_s,
+            "control_steps": int(control_times_s.size),
+            "total_process_time_s": float(control_times_s[-1]),
+        },
+        "final_geometry_reference": {"doc": reference_final_doc},
+        "target_region_doc_timeline": {
+            "times_s": control_times_s.tolist(),
+            "requested_target_doc": json_safe_float_list(reference_doc),
+            "mean_target_doc": timeline["mean_target_doc"].tolist(),
+            "min_target_doc": timeline["min_target_doc"].tolist(),
+            "max_target_doc": timeline["max_target_doc"].tolist(),
+            "std_target_doc": timeline["std_target_doc"].tolist(),
+            "lower_error": (
+                timeline["mean_target_doc"] - timeline["min_target_doc"]
+            ).tolist(),
+            "upper_error": (
+                timeline["max_target_doc"] - timeline["mean_target_doc"]
+            ).tolist(),
+            "mean_outside_doc": timeline["mean_outside_doc"].tolist(),
+        },
+        "target_region_reaction_progress_timeline": {
+            "times_s": control_times_s.tolist(),
+            "requested_reaction_progress": json_safe_float_list(
+                requested_reaction_progress
+            ),
+            "mean_target_reaction_progress": timeline[
+                "mean_target_reaction_progress"
+            ].tolist(),
+            "min_target_reaction_progress": timeline[
+                "min_target_reaction_progress"
+            ].tolist(),
+            "max_target_reaction_progress": timeline[
+                "max_target_reaction_progress"
+            ].tolist(),
+            "std_target_reaction_progress": timeline[
+                "std_target_reaction_progress"
+            ].tolist(),
+            "reaction_progress_error": json_safe_float_list(
+                reaction_progress_error
+            ),
+        },
+        "target_region_o2_timeline_mj_cm2": {
+            "units": "mJ/cm^2",
+            "times_s": control_times_s.tolist(),
+            "target_o2_mean": timeline["target_o2_mean"].tolist(),
+            "target_o2_min": timeline["target_o2_min"].tolist(),
+            "target_o2_max": timeline["target_o2_max"].tolist(),
+            "target_o2_std": timeline["target_o2_std"].tolist(),
+        },
+        "tracking_evaluation": tracking,
+        "temporal_tracking": tracking if tracking_mode == "curve" else None,
+        "temporal_reaction_progress_tracking": (
+            reaction_progress_tracking if tracking_mode == "curve" else None
+        ),
+        "tracking_points": tracking_points_metadata(
+            tracking_points,
+            tracking_variable=tracking_variable,
+            table_path=tracking_points_path.name,
+        ),
+        "sparse_tracking": (
+            None
+            if tracking_mode == "curve"
+            else tracking_points_metadata(
+                tracking_points,
+                tracking_variable=tracking_variable,
+                table_path=tracking_points_path.name,
+            )
+        ),
+        "soft_doc": final_metrics["soft_doc"],
+        "geometry": final_metrics["geometry"],
+        "boundary": final_metrics["boundary"],
+        "components": components_summary,
+        "holes": holes_summary,
+    }
+    metrics_path = output_dir / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(metrics_document, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return TargetMaskBaselineResult(
+        final_state=final_state,
+        timeline=timeline,
+        initial_target_doc_summary=initial_summaries["doc"],
+        initial_target_o2_summary=initial_summaries["o2"],
+        tracking=tracking,
+        tracking_points=tracking_points,
+        final_metrics=final_metrics,
+        metrics_document=metrics_document,
+        output_dir=output_dir,
+    )
+
+
+def build_baseline_comparison(
+    *,
+    mpc_control_times_s: np.ndarray,
+    mpc_reference_doc: np.ndarray,
+    mpc_target_doc: np.ndarray,
+    mpc_final_target_summary: dict[str, float],
+    mpc_tracking: dict[str, float],
+    mpc_tracking_points: dict[str, object] | None,
+    mpc_final_metrics: dict[str, object],
+    baseline: TargetMaskBaselineResult,
+) -> dict[str, object]:
+    """Build like-for-like MPC/baseline values from shared metric definitions."""
+
+    if mpc_tracking_points is None:
+        comparison_time_s = float(mpc_control_times_s[-1])
+        requested_doc = float(mpc_reference_doc[-1])
+        mpc_checkpoint_mean_doc = float(mpc_target_doc[-1])
+    else:
+        comparison_time_s = float(mpc_tracking_points["times_s"][-1])
+        requested_doc = float(mpc_tracking_points["requested_doc"][-1])
+        mpc_checkpoint_mean_doc = float(
+            mpc_tracking_points["mean_target_doc"][-1]
+        )
+    baseline_points = baseline.tracking_points
+    baseline_checkpoint_mean_doc = float(
+        baseline_points["mean_target_doc"][-1]
+    )
+
+    mpc_components = mpc_final_metrics["components"]
+    baseline_components = baseline.final_metrics["components"]
+    mpc_geometry = mpc_final_metrics["geometry"]
+    baseline_geometry = baseline.final_metrics["geometry"]
+    baseline_doc_timeline = baseline.timeline
+    comparison_metrics = {
+        "checkpoint_mean_doc": {
+            "mpc": mpc_checkpoint_mean_doc,
+            "baseline": baseline_checkpoint_mean_doc,
+        },
+        "checkpoint_absolute_error": {
+            "mpc": abs(mpc_checkpoint_mean_doc - requested_doc),
+            "baseline": abs(baseline_checkpoint_mean_doc - requested_doc),
+        },
+        "tracking_doc_rmse": {
+            "mpc": mpc_tracking["rmse"],
+            "baseline": baseline.tracking["rmse"],
+        },
+        "target_doc_rmse": {
+            "mpc": mpc_final_metrics["soft_doc"]["target_region_rmse"],
+            "baseline": baseline.final_metrics["soft_doc"]["target_region_rmse"],
+        },
+        "target_doc_std": {
+            "mpc": mpc_final_target_summary["std_target_doc"],
+            "baseline": float(baseline_doc_timeline["std_target_doc"][-1]),
+        },
+        "component_mean_doc_min": {
+            "mpc": mpc_components["component_mean_doc_min"],
+            "baseline": baseline_components["component_mean_doc_min"],
+        },
+        "component_mean_doc_max": {
+            "mpc": mpc_components["component_mean_doc_max"],
+            "baseline": baseline_components["component_mean_doc_max"],
+        },
+        "mean_outside_doc": {
+            "mpc": mpc_final_target_summary["mean_outside_doc"],
+            "baseline": float(baseline_doc_timeline["mean_outside_doc"][-1]),
+        },
+        "iou": {
+            "mpc": mpc_geometry["iou"],
+            "baseline": baseline_geometry["iou"],
+        },
+        "dice": {
+            "mpc": mpc_geometry["dice"],
+            "baseline": baseline_geometry["dice"],
+        },
+    }
+    return {
+        "enabled": True,
+        "label": "unoptimized repeated target-mask baseline",
+        "baseline_metrics_path": "baseline_target_mask/metrics.json",
+        "comparison_point": {
+            "time_s": comparison_time_s,
+            "requested_doc": requested_doc,
+            "selection": (
+                "final dense-curve point"
+                if mpc_tracking_points is None
+                else "last sparse tracking point"
+            ),
+        },
+        "metrics": comparison_metrics,
+    }
+
+
+def print_baseline_comparison(comparison: dict[str, object]) -> None:
+    """Print a compact MPC versus fixed-target benchmark table."""
+
+    labels = {
+        "checkpoint_mean_doc": "checkpoint mean DoC",
+        "checkpoint_absolute_error": "checkpoint abs error",
+        "tracking_doc_rmse": "tracking DoC RMSE",
+        "target_doc_rmse": "target DoC RMSE",
+        "target_doc_std": "target DoC std",
+        "component_mean_doc_min": "component mean DoC min",
+        "component_mean_doc_max": "component mean DoC max",
+        "mean_outside_doc": "mean outside DoC",
+        "iou": "IoU",
+        "dice": "Dice",
+    }
+
+    def format_value(value: object) -> str:
+        return "undefined" if value is None else f"{float(value):.6f}"
+
+    print("\n=== MPC vs unoptimized target-mask baseline ===")
+    print(f"{'metric':30s} {'MPC':>12s} {'baseline':>12s}")
+    metrics = comparison["metrics"]
+    for key, label in labels.items():
+        values = metrics[key]
+        print(
+            f"{label:30s} {format_value(values['mpc']):>12s} "
+            f"{format_value(values['baseline']):>12s}"
+        )
+
+
 def save_initializer_component_metrics_csv(
     rows: list[dict[str, object]], path: Path
 ) -> None:
@@ -1095,6 +1654,8 @@ def save_tracking_plot(
     *,
     initial_target_doc_summary: dict[str, float],
     initial_target_o2_summary: dict[str, float],
+    baseline_target_doc: np.ndarray | None = None,
+    baseline_initial_target_doc_summary: dict[str, float] | None = None,
 ) -> None:
     """Save experimental-reference versus closed-loop mean target DoC."""
 
@@ -1133,7 +1694,7 @@ def save_tracking_plot(
         achieved_max,
         color="tab:orange",
         alpha=0.22,
-        label="target-region min-max range",
+        label="MPC target-region min-max range",
     )
     axis.plot(
         achieved_times,
@@ -1141,8 +1702,25 @@ def save_tracking_plot(
         "o-",
         color="tab:blue",
         markersize=3,
-        label="simulated mean target DoC",
+        label="optimized MPC mean target DoC",
     )
+    if baseline_target_doc is not None:
+        if baseline_initial_target_doc_summary is None:
+            raise ValueError("baseline plot requires its initialized DoC summary")
+        baseline_target_doc = np.asarray(baseline_target_doc, dtype=float)
+        if baseline_target_doc.shape != np.asarray(actual_target_doc).shape:
+            raise ValueError("baseline and MPC DoC timelines must have equal length")
+        axis.plot(
+            achieved_times,
+            np.r_[
+                baseline_initial_target_doc_summary["mean_target_doc"],
+                baseline_target_doc,
+            ],
+            color="tab:purple",
+            linestyle="--",
+            linewidth=2.0,
+            label="unoptimized repeated target-mask baseline",
+        )
     axis.set_xlim(0.0, total_time_s)
     axis.set_ylim(0.0, 1.02)
     axis.set_xlabel("Absolute process time (s)")
@@ -1178,6 +1756,8 @@ def save_checkpoint_tracking_plot(
     initial_target_o2_summary: dict[str, float],
     marker_label: str = "explicit target checkpoints",
     title: str = "Checkpoint DoC tracking",
+    baseline_target_doc: np.ndarray | None = None,
+    baseline_initial_target_doc_summary: dict[str, float] | None = None,
 ) -> None:
     """Plot simulated DoC continuously and sparse requirements only as markers."""
 
@@ -1206,7 +1786,7 @@ def save_checkpoint_tracking_plot(
         "o-",
         color="tab:blue",
         markersize=3,
-        label="simulated mean target DoC",
+        label="optimized MPC mean target DoC",
     )
     axis.fill_between(
         plotted_times,
@@ -1214,7 +1794,25 @@ def save_checkpoint_tracking_plot(
         plotted_doc_max,
         color="tab:orange",
         alpha=0.12,
+        label="MPC target-region min-max range",
     )
+    if baseline_target_doc is not None:
+        if baseline_initial_target_doc_summary is None:
+            raise ValueError("baseline plot requires its initialized DoC summary")
+        baseline_target_doc = np.asarray(baseline_target_doc, dtype=float)
+        if baseline_target_doc.shape != np.asarray(actual_target_doc).shape:
+            raise ValueError("baseline and MPC DoC timelines must have equal length")
+        axis.plot(
+            plotted_times,
+            np.r_[
+                baseline_initial_target_doc_summary["mean_target_doc"],
+                baseline_target_doc,
+            ],
+            color="tab:purple",
+            linestyle="--",
+            linewidth=2.0,
+            label="unoptimized repeated target-mask baseline",
+        )
     axis.scatter(
         checkpoint_tracking["times_s"],
         checkpoint_tracking["requested_doc"],
@@ -1239,7 +1837,7 @@ def save_checkpoint_tracking_plot(
         color="tab:orange",
         ecolor="tab:orange",
         zorder=4,
-        label="achieved mean with target min-max range",
+        label="MPC achieved mean with target min-max range",
     )
     axis.set_xlim(0.0, total_time_s)
     axis.set_ylim(0.0, 1.02)
@@ -1665,7 +2263,13 @@ def run_demo(args: argparse.Namespace) -> None:
     target_native = target_native.to(device=device)
     optimization_target = construct_optimization_target(target_native, config)
     model = AIEModel(optimization_params, device=device)
+    native_forward_model: AIEModel | None = (
+        model if config.resolution_mode == "native" else None
+    )
     state = model.initialize_state(config.optimization_shape)
+    native_initial_state: AIEState | None = (
+        state.detach() if config.resolution_mode == "native" else None
+    )
     optimization_initial_target_doc_summary = doc_region_summary(
         state.doc, optimization_target, args.target_threshold
     )
@@ -2152,6 +2756,10 @@ def run_demo(args: argparse.Namespace) -> None:
             native_replay_target_o2_max.append(o2_summary["max"])
             native_replay_target_o2_std.append(o2_summary["std"])
 
+        native_forward_model = AIEModel(native_params, device=device)
+        native_initial_state = native_forward_model.initialize_state(
+            config.native_shape
+        )
         native_state = replay_native_controls(
             native_params,
             config.native_shape,
@@ -2161,6 +2769,8 @@ def run_demo(args: argparse.Namespace) -> None:
             doc_frame_callback=save_native_replay_frame,
             authoritative_reference=reference,
             state_callback=record_native_replay_state,
+            native_model=native_forward_model,
+            initial_state=native_initial_state,
         )
         if set(native_replay_initial_plot_summaries) != {"doc", "o2"}:
             raise AssertionError("native replay did not report its initialized state")
@@ -2328,6 +2938,49 @@ def run_demo(args: argparse.Namespace) -> None:
         args.geometry_threshold,
         config.native_pixel_pitch_m * 1e6,
     )
+    baseline_result: TargetMaskBaselineResult | None = None
+    if getattr(args, "baseline_target_mask", True):
+        if native_forward_model is None or native_initial_state is None:
+            raise AssertionError("native forward model/state was not initialized")
+        print("\nRunning unoptimized repeated target-mask baseline...")
+        baseline_result = run_unoptimized_target_mask_baseline(
+            model=native_forward_model,
+            initial_state=native_initial_state,
+            target_native=target_native,
+            control_times_s=primary_control_times_s,
+            reference_doc=primary_reference_doc,
+            checkpoints=checkpoints,
+            tracking_mode=args.tracking_mode,
+            tracking_variable=args.tracking_variable,
+            reference_final_doc=reference_final_doc,
+            target_threshold=args.target_threshold,
+            geometry_threshold=args.geometry_threshold,
+            pixel_pitch_um=config.native_pixel_pitch_m * 1e6,
+            physics_steps_per_control=args.physics_steps_per_control,
+            output_dir=args.output_dir / "baseline_target_mask",
+            resolution_mode=config.resolution_mode,
+            physics_condition=physics_condition,
+            authoritative_reference=reference,
+            tracking_specification_metadata=(
+                tracking_specification.provenance_metadata()
+            ),
+        )
+        baseline_comparison = build_baseline_comparison(
+            mpc_control_times_s=primary_control_times_s,
+            mpc_reference_doc=primary_reference_doc,
+            mpc_target_doc=primary_target_doc,
+            mpc_final_target_summary=native_target_summary,
+            mpc_tracking=tracking,
+            mpc_tracking_points=checkpoint_tracking,
+            mpc_final_metrics=final_metrics,
+            baseline=baseline_result,
+        )
+    else:
+        baseline_comparison = {
+            "enabled": False,
+            "label": "unoptimized repeated target-mask baseline",
+            "reason": "disabled by --no-baseline-target-mask",
+        }
     component_metrics_path = args.output_dir / "component_metrics.csv"
     save_component_metrics_csv(final_metrics["component_rows"], component_metrics_path)
     if args.tracking_mode == "curve":
@@ -2346,6 +2999,16 @@ def run_demo(args: argparse.Namespace) -> None:
             tracking_plot_path,
             initial_target_doc_summary=initial_target_doc_summary_for_plot,
             initial_target_o2_summary=initial_target_o2_summary_for_plot,
+            baseline_target_doc=(
+                None
+                if baseline_result is None
+                else baseline_result.timeline["mean_target_doc"]
+            ),
+            baseline_initial_target_doc_summary=(
+                None
+                if baseline_result is None
+                else baseline_result.initial_target_doc_summary
+            ),
         )
     else:
         tracking_plot_path = args.output_dir / "doc_checkpoint_tracking.png"
@@ -2372,6 +3035,16 @@ def run_demo(args: argparse.Namespace) -> None:
                 "Sparse sampled-curve DoC tracking"
                 if args.tracking_mode == "sampled-curve"
                 else "Checkpoint DoC tracking"
+            ),
+            baseline_target_doc=(
+                None
+                if baseline_result is None
+                else baseline_result.timeline["mean_target_doc"]
+            ),
+            baseline_initial_target_doc_summary=(
+                None
+                if baseline_result is None
+                else baseline_result.initial_target_doc_summary
             ),
         )
     tracking_points_csv_path: Path | None = None
@@ -2446,6 +3119,7 @@ def run_demo(args: argparse.Namespace) -> None:
             "std_target_doc": primary_target_doc_std.tolist(),
             "lower_error": primary_target_doc_lower_error.tolist(),
             "upper_error": primary_target_doc_upper_error.tolist(),
+            "mean_outside_doc": primary_outside_doc.tolist(),
         },
         "target_region_reaction_progress_timeline": {
             "times_s": primary_control_times_s.tolist(),
@@ -2483,65 +3157,22 @@ def run_demo(args: argparse.Namespace) -> None:
         "sparse_tracking": (
             None
             if checkpoint_tracking is None
-            else {
-                "tracking_variable": args.tracking_variable,
-                "times_s": checkpoint_tracking["times_s"].tolist(),
-                "requested_doc": checkpoint_tracking["requested_doc"].tolist(),
-                "achieved_doc": checkpoint_tracking["achieved_doc"].tolist(),
-                "mean_target_doc": checkpoint_tracking["mean_target_doc"].tolist(),
-                "min_target_doc": checkpoint_tracking["min_target_doc"].tolist(),
-                "max_target_doc": checkpoint_tracking["max_target_doc"].tolist(),
-                "std_target_doc": checkpoint_tracking["std_target_doc"].tolist(),
-                "lower_error": checkpoint_tracking["lower_error"].tolist(),
-                "upper_error": checkpoint_tracking["upper_error"].tolist(),
-                "errors": checkpoint_tracking["errors"].tolist(),
-                "requested_reaction_progress": json_safe_float_list(
-                    checkpoint_tracking["requested_reaction_progress"]
-                ),
-                "mean_target_reaction_progress": checkpoint_tracking[
-                    "mean_target_reaction_progress"
-                ].tolist(),
-                "min_target_reaction_progress": checkpoint_tracking[
-                    "min_target_reaction_progress"
-                ].tolist(),
-                "max_target_reaction_progress": checkpoint_tracking[
-                    "max_target_reaction_progress"
-                ].tolist(),
-                "std_target_reaction_progress": checkpoint_tracking[
-                    "std_target_reaction_progress"
-                ].tolist(),
-                "reaction_progress_error": json_safe_float_list(
-                    checkpoint_tracking["reaction_progress_error"]
-                ),
-                "reaction_progress_rmse": checkpoint_tracking[
-                    "reaction_progress_rmse"
-                ],
-                "reaction_progress_mae": checkpoint_tracking[
-                    "reaction_progress_mae"
-                ],
-                "reaction_progress_max_absolute_error": checkpoint_tracking[
-                    "reaction_progress_max_absolute_error"
-                ],
-                "target_o2_mean": checkpoint_tracking["target_o2_mean"].tolist(),
-                "target_o2_min": checkpoint_tracking["target_o2_min"].tolist(),
-                "target_o2_max": checkpoint_tracking["target_o2_max"].tolist(),
-                "target_o2_std": checkpoint_tracking["target_o2_std"].tolist(),
-                "target_o2_units": "mJ/cm^2",
-                "rmse": checkpoint_tracking["rmse"],
-                "mae": checkpoint_tracking["mae"],
-                "max_absolute_error": checkpoint_tracking["max_absolute_error"],
-                "table_path": (
+            else tracking_points_metadata(
+                checkpoint_tracking,
+                tracking_variable=args.tracking_variable,
+                table_path=(
                     None
                     if tracking_points_csv_path is None
                     else tracking_points_csv_path.name
                 ),
-            }
+            )
         ),
         "soft_doc": final_metrics["soft_doc"],
         "geometry": final_metrics["geometry"],
         "boundary": final_metrics["boundary"],
         "components": components_summary,
         "holes": holes_summary,
+        "baseline_comparison": baseline_comparison,
     }
     metrics_path = args.output_dir / "metrics.json"
     metrics_path.write_text(
@@ -2920,6 +3551,8 @@ def run_demo(args: argparse.Namespace) -> None:
         outside_mean_doc=native_outside_doc,
         final_metrics=final_metrics,
     )
+    if baseline_result is not None:
+        print_baseline_comparison(baseline_comparison)
 
     print(f"resolution_mode={config.resolution_mode}")
     print(f"native_grid={config.native_shape}")
@@ -2949,6 +3582,8 @@ def run_demo(args: argparse.Namespace) -> None:
     print(f"saved component metrics: {component_metrics_path.resolve()}")
     if tracking_points_csv_path is not None:
         print(f"saved tracking-point statistics: {tracking_points_csv_path.resolve()}")
+    if baseline_result is not None:
+        print(f"saved baseline outputs: {baseline_result.output_dir.resolve()}")
     print(f"saved metrics summary: {metrics_path.resolve()}")
     print(f"saved outputs to {args.output_dir.resolve()}")
 
@@ -4416,6 +5051,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir", type=Path, default=REPOSITORY_DIR / "mpc_output"
+    )
+    parser.add_argument(
+        "--baseline-target-mask",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "also run the unoptimized repeated raw target-mask forward rollout "
+            "(default: enabled; disable with --no-baseline-target-mask)"
+        ),
     )
     parser.add_argument(
         "--resolution-mode", choices=("native", "coarse"), default="native"
