@@ -4,12 +4,8 @@
 /.codex
 /.worktrees
 /.vscode
-/20mW_L_shape_forTEMPO_0,1,5mM
 /AIE Reproduce.py
 /AIE _Tim.py
-/circle.png
-/circles_TEMPO_10,15,20,25mW_0,1,5mM
-/c_arr.png
 /data
 /From_Scratch
 /Inhibition_Energy Fitter.ipynb
@@ -32,6 +28,7 @@
 /test_repro
 /.DS_Store
 /PastDataFiles
+/GEO/seg
 
 # generated simulation/optimization output images (AIE_TEMPOv1.1.py), any run folder
 **/aaa_*.png
@@ -41,3 +38,4 @@
 **/allDoC.gif
 **/allO2.gif
 **/allTEMPO.gif
+**/**_scalebar.png

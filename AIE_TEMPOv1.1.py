@@ -28,7 +28,7 @@ print('Working Device:',device)
 def intensityOptLoss(firstDoC, intermediateDoC, finalDoC, target): #as per MSEC
     firstLoss = torch.linalg.matrix_norm((firstDoC - 0.0* target),'fro')
     intermediateLoss = torch.linalg.matrix_norm((intermediateDoC - 0.77 * target),'fro')
-    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.40 * target),'fro')
+    finalLoss = torch.linalg.matrix_norm((finalDoC - 0.90 * target),'fro')
     #FinalLoss=F.mse_loss(finalDoC, target)
     return finalLoss#+intermediateLoss
     #return firstLoss + intermediateLoss + finalLoss
@@ -135,9 +135,9 @@ dx,dy=float(7.6e-6),float(7.6e-6)
 
 blur_size=30e-6 # used to be 600um to 7.4um pxs
  # set it zeros to optimize without scattering
-O2_dfsvty=float(400e-12) #m2^2/s 2000um2/s
+O2_dfsvty=float(40e-12) #m2^2/s 2000um2/s
 #dfsvty=float(200e-12) #O2 concentration-dependent
-TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
+TEMPO_dfsvty=float(40e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 #The TEMPO now is still too small for diffusion.
 # PROBLEM: CANNOT be too small to create Gaussian kernel? 
 # What if it is smaller than 1 pixel?
@@ -150,10 +150,10 @@ pre_cap=0.015 #ceiling on that pre-cure creep before real curing starts
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(4/dt)
+total_steps=int(10/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(4 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(10 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=33.8011 #(26/09/01)
@@ -263,7 +263,7 @@ for epoch in range(numEpochs):
     
 
 
-    if numEpochs == 1:
+    if numEpochs == 1: 
         #plt.imshow(blur_mask.detach().cpu().numpy(),cmap='gray')
         #plt.show()
         print(f'Intensity at the Center: {blur_mask[H//2-DoC_radius:H//2+DoC_radius,
@@ -274,15 +274,16 @@ for epoch in range(numEpochs):
     DoC=[torch.zeros((H,W)).to(torch.float32).to(device)]
     cum_light=torch.zeros((H,W)).to(torch.float32).to(device) #running light dose per pixel, for pre-cure ramp
 
-    
+    #Our previous linear model for B was not accurate enough, Might as well not use it
     #B = 0.0133*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.4638 #0mMTEMPO (26/07/25)
-     #B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO Never updated for 1mM
+    #B =0.0152*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3135 #1mMTEMPO Never updated for 1mM
     #B =0.0069*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.3815 #5mMTEMPO (26/07/25)
-
-    B = 0.0121*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.5623 #0mMTEMPO (26/09/01)
+    #B = 0.0121*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.5623 #0mMTEMPO (26/09/01)
     #B = 0.0108*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.2541 #5mMTEMPO (26/09/01)
     
-
+    B = 0.1299 * intensity^0.5645   #0mMTEMPO (26/09/01) (R^2 = 0.9970)
+    #B = 0.0433 * intensity^0.7454   #5mMTEMPO (26/09/01)(R^2 = 0.9892)
+    
     #print(B[H//2,W//2].item()) # for debug
 
     # absorption coefficient, mJ/cm2
