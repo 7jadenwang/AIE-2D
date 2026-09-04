@@ -142,7 +142,7 @@ TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 # PROBLEM: CANNOT be too small to create Gaussian kernel? 
 # What if it is smaller than 1 pixel?
 
-intensity=70 #mW/cm2
+intensity=30 #mW/cm2
 #Change intensity with different data pls
 
 pre_slope=2e-3 #DoC per mJ/cm2 of delivered light: slight upward creep during O2/TEMPO inhibition
@@ -156,8 +156,8 @@ tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matt
 tstepT2 = int(9 / dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
-O2inhibition=33.8011 #(26/09/01)
-#O2inhibition=27.7117 #(26/07/25)
+# O2inhibition=33.8011 #(26/09/01)
+O2inhibition=27.7117 #(26/07/25)
 # 0 for no O2 inhibition
 
 Totalinhibtion=0

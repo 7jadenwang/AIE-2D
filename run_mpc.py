@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import GifImagePlugin, Image
+from PIL import GifImagePlugin, Image, ImageDraw, ImageFont
 
 from aie_fine_grid import expand_projector_mask, initialize_projector_mask
 from aie_model import (
@@ -403,13 +403,94 @@ def validate_doc_field(doc: torch.Tensor, expected_shape: tuple[int, int]) -> No
         )
 
 
+def _nice_pixel_scale_length(image_width: int) -> int:
+    """Choose a conventional pixel length nearest 12.5% of the image width."""
+
+    if image_width < 1:
+        raise ValueError(f"image width must be positive, got {image_width}")
+    target_length = 0.125 * image_width
+    maximum_length = max(1, image_width - 2)
+    candidates: set[int] = set()
+    decade = 1
+    while decade <= maximum_length * 10:
+        for multiplier in (1.0, 2.0, 2.5, 5.0):
+            value = multiplier * decade
+            if value.is_integer() and 1 <= value <= maximum_length:
+                candidates.add(int(value))
+        decade *= 10
+    if not candidates:
+        return 1
+    return min(candidates, key=lambda value: (abs(value - target_length), value))
+
+
+def _add_pixel_scale_bar(image_values: np.ndarray) -> np.ndarray:
+    """Add a lower-right pixel scale bar to a rendered grayscale copy."""
+
+    rendered = np.array(image_values, dtype=np.uint16, copy=True)
+    if rendered.ndim != 2:
+        raise ValueError(
+            f"DoC visualization must be 2D, got shape {rendered.shape}"
+        )
+    height, width = rendered.shape
+    scale_length = _nice_pixel_scale_length(width)
+    label = f"{scale_length} Px"
+    minimum_dimension = min(height, width)
+    margin = max(1, min(12, round(0.02 * minimum_dimension)))
+    padding = max(1, min(6, round(0.012 * minimum_dimension)))
+    font_size = max(8, min(20, round(0.04 * minimum_dimension)))
+    try:
+        font = ImageFont.load_default(size=font_size)
+    except TypeError:
+        font = ImageFont.load_default()
+
+    sizing_canvas = Image.new("1", (1, 1))
+    sizing_draw = ImageDraw.Draw(sizing_canvas)
+    text_box = sizing_draw.textbbox((0, 0), label, font=font)
+    text_width = text_box[2] - text_box[0]
+    text_height = text_box[3] - text_box[1]
+    gap = max(1, padding // 2)
+    bar_thickness = max(2, min(5, round(0.008 * minimum_dimension)))
+    content_width = max(scale_length, text_width)
+    inset_width = min(width, content_width + 2 * padding)
+    inset_height = min(
+        height, text_height + gap + bar_thickness + 2 * padding
+    )
+    inset_right = max(inset_width, width - margin)
+    inset_bottom = max(inset_height, height - margin)
+    inset_left = inset_right - inset_width
+    inset_top = inset_bottom - inset_height
+    rendered[inset_top:inset_bottom, inset_left:inset_right] = 0
+
+    bar_left = inset_left + (inset_width - scale_length) // 2
+    bar_top = inset_bottom - padding - bar_thickness
+    rendered[
+        bar_top : bar_top + bar_thickness,
+        bar_left : bar_left + scale_length,
+    ] = 65535
+
+    text_left = inset_left + (inset_width - text_width) // 2
+    text_top = inset_top + padding
+    text_mask_image = Image.new("1", (width, height))
+    text_draw = ImageDraw.Draw(text_mask_image)
+    text_draw.text(
+        (text_left - text_box[0], text_top - text_box[1]),
+        label,
+        fill=1,
+        font=font,
+    )
+    rendered[np.asarray(text_mask_image, dtype=bool)] = 65535
+    return rendered
+
+
 def save_doc_frame(
     doc: torch.Tensor, path: Path, expected_shape: tuple[int, int]
 ) -> None:
-    """Validate and save one DoC frame with the final-DoC grayscale convention."""
+    """Save a DoC visualization with a dimension-derived pixel scale bar."""
 
     validate_doc_field(doc, expected_shape)
-    save_grayscale(doc, path)
+    values = doc.detach().clamp(0, 1).cpu().numpy()
+    rendered = np.round(values * 65535).astype(np.uint16)
+    Image.fromarray(_add_pixel_scale_bar(rendered)).save(path)
 
 
 def _gif_frame_from_doc_png(path: Path) -> Image.Image:
@@ -1225,7 +1306,11 @@ def run_unoptimized_target_mask_baseline(
     save_gif_from_frames(
         doc_frame_paths, output_dir / "doc_evolution_native.gif"
     )
-    save_grayscale(final_state.doc, output_dir / "final_doc_native.png")
+    save_doc_frame(
+        final_state.doc,
+        output_dir / "final_doc_native.png",
+        tuple(target_native.shape),
+    )
     save_grayscale(
         final_state.o2 / max(model.params.o2_inhibition_mj_cm2, 1e-12),
         output_dir / "final_o2_native.png",
@@ -2681,7 +2766,11 @@ def run_demo(args: argparse.Namespace) -> None:
     optimization_state = state
     coarse_gif_path: Path | None = None
     if config.resolution_mode == "coarse":
-        save_grayscale(optimization_state.doc, args.output_dir / "final_doc_coarse.png")
+        save_doc_frame(
+            optimization_state.doc,
+            args.output_dir / "final_doc_coarse.png",
+            config.optimization_shape,
+        )
         save_grayscale(
             optimization_state.o2
             / max(optimization_params.o2_inhibition_mj_cm2, 1e-12),
@@ -2820,7 +2909,11 @@ def run_demo(args: argparse.Namespace) -> None:
                 f"final native {name} must have shape {config.native_shape}, got "
                 f"{tuple(field.shape)}"
             )
-    save_grayscale(native_state.doc, args.output_dir / "final_doc_native.png")
+    save_doc_frame(
+        native_state.doc,
+        args.output_dir / "final_doc_native.png",
+        config.native_shape,
+    )
     save_grayscale(
         native_state.o2 / max(native_params.o2_inhibition_mj_cm2, 1e-12),
         args.output_dir / "final_o2_native.png",
