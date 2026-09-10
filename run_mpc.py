@@ -30,6 +30,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import GifImagePlugin, Image, ImageDraw, ImageFont
+from scipy import ndimage
 
 from aie_fine_grid import expand_projector_mask, initialize_projector_mask
 from aie_model import (
@@ -204,6 +205,21 @@ class TargetMaskBaselineResult:
     final_metrics: dict[str, object]
     metrics_document: dict[str, object]
     output_dir: Path
+
+
+@dataclass(frozen=True)
+class OutsideDiagnosticRegions:
+    """Target/outside masks and physics-derived optical boundary provenance."""
+
+    target: torch.Tensor
+    outside: torch.Tensor
+    boundary: torch.Tensor
+    optical_length_px: float
+    boundary_band_radius_px: int
+    target_pixel_count: int
+    outside_pixel_count: int
+    boundary_pixel_count: int
+    optical_length_method: str
 
 
 def build_resolution_config(
@@ -1655,6 +1671,432 @@ def print_baseline_comparison(comparison: dict[str, object]) -> None:
         )
 
 
+OUTSIDE_OXYGEN_DIAGNOSTIC_COLUMNS = (
+    "time_s",
+    "projector_control_target_mean",
+    "projector_control_target_min",
+    "projector_control_target_max",
+    "projector_control_outside_mean",
+    "projector_control_outside_max",
+    "projector_control_boundary_mean",
+    "projector_control_boundary_max",
+    "local_intensity_target_mean_mw_cm2",
+    "local_intensity_target_min_mw_cm2",
+    "local_intensity_target_max_mw_cm2",
+    "local_intensity_outside_mean_mw_cm2",
+    "local_intensity_outside_max_mw_cm2",
+    "local_intensity_boundary_mean_mw_cm2",
+    "local_intensity_boundary_max_mw_cm2",
+    "boundary_o2_mean_mj_cm2",
+    "boundary_o2_min_mj_cm2",
+    "boundary_o2_reserve_mean",
+    "boundary_o2_reserve_min",
+    "boundary_o2_depletion_mean",
+    "boundary_o2_depletion_max",
+    "boundary_o2_reserve_below_75pct_fraction",
+    "boundary_o2_reserve_below_50pct_fraction",
+    "boundary_o2_reserve_below_25pct_fraction",
+    "boundary_o2_reserve_below_5pct_fraction",
+    "boundary_o2_at_or_below_zero_fraction",
+    "outside_doc_mean",
+    "outside_doc_max",
+    "boundary_doc_mean",
+    "boundary_doc_max",
+)
+
+
+def build_outside_diagnostic_regions(
+    model: AIEModel,
+    target: torch.Tensor,
+    target_threshold: float,
+) -> OutsideDiagnosticRegions:
+    """Build the shared target/outside band from the resolved optical kernel."""
+
+    require_native_target(target)
+    if target.device != model.device:
+        raise ValueError("diagnostic target and native model must use the same device")
+    if model.control_shape_for(target.shape) != tuple(target.shape):
+        raise ValueError("outside diagnostics require native-grid applied controls")
+    target_region = target > target_threshold
+    if not bool(target_region.any()):
+        raise ValueError("target has no pixels above target_threshold")
+    outside_region = ~target_region
+
+    kernel = model.scattering_kernel_1d.detach().to(dtype=torch.float64)
+    coordinates = torch.arange(
+        kernel.numel(), device=kernel.device, dtype=kernel.dtype
+    )
+    coordinates = coordinates - (kernel.numel() - 1) / 2
+    kernel_sum = kernel.sum()
+    if not bool(torch.isfinite(kernel).all()) or float(kernel_sum) <= 0.0:
+        raise ValueError("resolved scattering kernel is not finite and positive")
+    optical_variance_px2 = float(
+        (kernel * coordinates.square()).sum() / kernel_sum
+    )
+    optical_length_px = math.sqrt(max(0.0, optical_variance_px2))
+    boundary_band_radius_px = max(1, math.ceil(optical_length_px))
+    outside_array = outside_region.detach().cpu().numpy().astype(bool)
+    distance_to_target_px = ndimage.distance_transform_edt(outside_array)
+    boundary_array = outside_array & (
+        distance_to_target_px <= boundary_band_radius_px
+    )
+    boundary_region = torch.from_numpy(boundary_array).to(
+        device=target.device, dtype=torch.bool
+    )
+    return OutsideDiagnosticRegions(
+        target=target_region,
+        outside=outside_region,
+        boundary=boundary_region,
+        optical_length_px=optical_length_px,
+        boundary_band_radius_px=boundary_band_radius_px,
+        target_pixel_count=int(target_region.sum().item()),
+        outside_pixel_count=int(outside_region.sum().item()),
+        boundary_pixel_count=int(boundary_region.sum().item()),
+        optical_length_method=(
+            "RMS width from the second spatial moment of the resolved native "
+            "AIEModel.scattering_kernel_1d"
+        ),
+    )
+
+
+def _masked_field_summary(
+    field: torch.Tensor, mask: torch.Tensor
+) -> dict[str, float | None]:
+    """Return mean/min/max without inventing values for an empty region."""
+
+    if tuple(field.shape) != tuple(mask.shape):
+        raise ValueError(
+            f"diagnostic field shape {tuple(field.shape)} does not match region "
+            f"shape {tuple(mask.shape)}"
+        )
+    values = field[mask]
+    if values.numel() == 0:
+        return {"mean": None, "min": None, "max": None}
+    return {
+        "mean": float(values.mean()),
+        "min": float(values.min()),
+        "max": float(values.max()),
+    }
+
+
+def _boundary_o2_diagnostics(
+    o2: torch.Tensor,
+    initial_o2: torch.Tensor,
+    boundary: torch.Tensor,
+) -> dict[str, float | None]:
+    """Summarize physical O2 and per-pixel reserve on the outside band."""
+
+    o2_summary = _masked_field_summary(o2, boundary)
+    o2_values = o2[boundary]
+    initial_values = initial_o2[boundary]
+    if o2_values.numel() == 0:
+        return {
+            "boundary_o2_mean_mj_cm2": None,
+            "boundary_o2_min_mj_cm2": None,
+            "boundary_o2_reserve_mean": None,
+            "boundary_o2_reserve_min": None,
+            "boundary_o2_depletion_mean": None,
+            "boundary_o2_depletion_max": None,
+            "boundary_o2_reserve_below_75pct_fraction": None,
+            "boundary_o2_reserve_below_50pct_fraction": None,
+            "boundary_o2_reserve_below_25pct_fraction": None,
+            "boundary_o2_reserve_below_5pct_fraction": None,
+            "boundary_o2_at_or_below_zero_fraction": None,
+        }
+    if not bool(torch.isfinite(initial_values).all()) or not bool(
+        (initial_values > 0).all()
+    ):
+        raise ValueError(
+            "boundary O2 reserve requires finite, positive initialized O2 at "
+            "every boundary pixel"
+        )
+    reserve_values = o2_values / initial_values
+    depletion_values = 1.0 - reserve_values
+    reserve_mean = float(reserve_values.mean())
+    reserve_min = float(reserve_values.min())
+    depletion_mean = float(depletion_values.mean())
+    depletion_max = float(depletion_values.max())
+    threshold_fractions = {
+        threshold: float((reserve_values < threshold).float().mean())
+        for threshold in (0.75, 0.5, 0.25, 0.05)
+    }
+    return {
+        "boundary_o2_mean_mj_cm2": o2_summary["mean"],
+        "boundary_o2_min_mj_cm2": o2_summary["min"],
+        "boundary_o2_reserve_mean": reserve_mean,
+        "boundary_o2_reserve_min": reserve_min,
+        "boundary_o2_depletion_mean": depletion_mean,
+        "boundary_o2_depletion_max": depletion_max,
+        "boundary_o2_reserve_below_75pct_fraction": threshold_fractions[0.75],
+        "boundary_o2_reserve_below_50pct_fraction": threshold_fractions[0.5],
+        "boundary_o2_reserve_below_25pct_fraction": threshold_fractions[0.25],
+        "boundary_o2_reserve_below_5pct_fraction": threshold_fractions[0.05],
+        "boundary_o2_at_or_below_zero_fraction": float(
+            (o2_values <= 0).float().mean()
+        ),
+    }
+
+
+def collect_outside_oxygen_diagnostics(
+    *,
+    model: AIEModel,
+    initial_state: AIEState,
+    applied_controls: list[torch.Tensor],
+    control_times_s: np.ndarray,
+    physics_steps_per_control: int,
+    regions: OutsideDiagnosticRegions,
+) -> list[dict[str, object]]:
+    """Replay realized controls after optimization and collect diagnostics."""
+
+    control_times_s = np.asarray(control_times_s, dtype=float)
+    if control_times_s.ndim != 1 or len(applied_controls) != control_times_s.size:
+        raise ValueError(
+            "diagnostic controls and realized times must have equal length"
+        )
+    if physics_steps_per_control < 1:
+        raise ValueError("diagnostic physics_steps_per_control must be positive")
+    state = initial_state.detach()
+    if tuple(state.shape) != tuple(regions.target.shape):
+        raise ValueError("diagnostic initial state and regions must have equal shape")
+    initial_o2 = state.o2.detach()
+    rows: list[dict[str, object]] = []
+    with torch.no_grad():
+        for time_s, control in zip(control_times_s, applied_controls):
+            prepared = model.prepare_control(control, state.shape)
+            for _ in range(physics_steps_per_control):
+                state = model.step_prepared(state, prepared)
+
+            control_target = _masked_field_summary(control, regions.target)
+            control_outside = _masked_field_summary(control, regions.outside)
+            control_boundary = _masked_field_summary(control, regions.boundary)
+            intensity_target = _masked_field_summary(
+                prepared.local_intensity, regions.target
+            )
+            intensity_outside = _masked_field_summary(
+                prepared.local_intensity, regions.outside
+            )
+            intensity_boundary = _masked_field_summary(
+                prepared.local_intensity, regions.boundary
+            )
+            outside_doc = _masked_field_summary(state.doc, regions.outside)
+            boundary_doc = _masked_field_summary(state.doc, regions.boundary)
+            row: dict[str, object] = {
+                "time_s": float(time_s),
+                "projector_control_target_mean": control_target["mean"],
+                "projector_control_target_min": control_target["min"],
+                "projector_control_target_max": control_target["max"],
+                "projector_control_outside_mean": control_outside["mean"],
+                "projector_control_outside_max": control_outside["max"],
+                "projector_control_boundary_mean": control_boundary["mean"],
+                "projector_control_boundary_max": control_boundary["max"],
+                "local_intensity_target_mean_mw_cm2": intensity_target["mean"],
+                "local_intensity_target_min_mw_cm2": intensity_target["min"],
+                "local_intensity_target_max_mw_cm2": intensity_target["max"],
+                "local_intensity_outside_mean_mw_cm2": intensity_outside["mean"],
+                "local_intensity_outside_max_mw_cm2": intensity_outside["max"],
+                "local_intensity_boundary_mean_mw_cm2": intensity_boundary["mean"],
+                "local_intensity_boundary_max_mw_cm2": intensity_boundary["max"],
+                "outside_doc_mean": outside_doc["mean"],
+                "outside_doc_max": outside_doc["max"],
+                "boundary_doc_mean": boundary_doc["mean"],
+                "boundary_doc_max": boundary_doc["max"],
+            }
+            row.update(
+                _boundary_o2_diagnostics(
+                    state.o2, initial_o2, regions.boundary
+                )
+            )
+            rows.append(row)
+    return rows
+
+
+def save_outside_oxygen_diagnostics_csv(
+    rows: list[dict[str, object]], path: Path
+) -> None:
+    """Save one row per realized control time in a stable column order."""
+
+    with path.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(
+            output, fieldnames=OUTSIDE_OXYGEN_DIAGNOSTIC_COLUMNS
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _diagnostic_aggregate(
+    rows: list[dict[str, object]], key: str, method: str
+) -> float | None:
+    """Aggregate finite diagnostic values for the terminal comparison."""
+
+    values = [
+        float(row[key])
+        for row in rows
+        if row[key] is not None and math.isfinite(float(row[key]))
+    ]
+    if not values:
+        return None
+    if method == "max":
+        return max(values)
+    if method == "min":
+        return min(values)
+    if method == "mean":
+        return float(np.mean(values))
+    if method == "final":
+        return values[-1]
+    raise ValueError(f"unsupported diagnostic aggregate {method!r}")
+
+
+def outside_oxygen_diagnostic_summary(
+    rows: list[dict[str, object]],
+) -> dict[str, float | None]:
+    """Build the compact evidence summary without changing timeline values."""
+
+    return {
+        "max_commanded_u_outside": _diagnostic_aggregate(
+            rows, "projector_control_outside_max", "max"
+        ),
+        "mean_commanded_u_boundary": _diagnostic_aggregate(
+            rows, "projector_control_boundary_mean", "mean"
+        ),
+        "max_local_intensity_boundary_mw_cm2": _diagnostic_aggregate(
+            rows, "local_intensity_boundary_max_mw_cm2", "max"
+        ),
+        "final_boundary_o2_reserve_mean": _diagnostic_aggregate(
+            rows, "boundary_o2_reserve_mean", "final"
+        ),
+        "minimum_boundary_o2_reserve": _diagnostic_aggregate(
+            rows, "boundary_o2_reserve_min", "min"
+        ),
+        "final_boundary_o2_at_or_below_zero_fraction": _diagnostic_aggregate(
+            rows, "boundary_o2_at_or_below_zero_fraction", "final"
+        ),
+        "final_boundary_doc_mean": _diagnostic_aggregate(
+            rows, "boundary_doc_mean", "final"
+        ),
+        "final_boundary_doc_max": _diagnostic_aggregate(
+            rows, "boundary_doc_max", "final"
+        ),
+    }
+
+
+def build_outside_oxygen_diagnostic_comparison(
+    mpc_rows: list[dict[str, object]],
+    baseline_rows: list[dict[str, object]] | None,
+) -> dict[str, object]:
+    """Pair compact MPC/baseline diagnostic summaries."""
+
+    mpc_summary = outside_oxygen_diagnostic_summary(mpc_rows)
+    baseline_summary = (
+        None
+        if baseline_rows is None
+        else outside_oxygen_diagnostic_summary(baseline_rows)
+    )
+    return {
+        "label": "outside exposure / O2 diagnostics",
+        "aggregation": {
+            "commanded/local maxima": "maximum over all realized control times",
+            "mean commanded boundary": "mean over realized control times",
+            "final fields": "last realized control time",
+            "minimum reserve": "minimum pixel reserve over all realized times",
+        },
+        "metrics": {
+            key: {
+                "mpc": value,
+                "baseline": (
+                    None if baseline_summary is None else baseline_summary[key]
+                ),
+            }
+            for key, value in mpc_summary.items()
+        },
+    }
+
+
+def print_outside_oxygen_diagnostic_comparison(
+    comparison: dict[str, object]
+) -> None:
+    """Print the concise outside-command/scattering/O2 evidence table."""
+
+    labels = {
+        "max_commanded_u_outside": "max commanded u outside",
+        "mean_commanded_u_boundary": "mean commanded u boundary",
+        "max_local_intensity_boundary_mw_cm2": "max local I boundary (mW/cm^2)",
+        "final_boundary_o2_reserve_mean": "final boundary O2 reserve",
+        "minimum_boundary_o2_reserve": "min boundary O2 reserve",
+        "final_boundary_o2_at_or_below_zero_fraction": "fraction O2 <= 0",
+        "final_boundary_doc_mean": "mean boundary DoC",
+        "final_boundary_doc_max": "max boundary DoC",
+    }
+
+    def format_value(value: object) -> str:
+        return "undefined" if value is None else f"{float(value):.6f}"
+
+    print("\n=== Outside exposure / O2 diagnostics ===")
+    print(f"{'metric':36s} {'MPC':>12s} {'baseline':>12s}")
+    metrics = comparison["metrics"]
+    for key, label in labels.items():
+        values = metrics[key]
+        print(
+            f"{label:36s} {format_value(values['mpc']):>12s} "
+            f"{format_value(values['baseline']):>12s}"
+        )
+
+
+def save_outside_oxygen_diagnostics_plot(
+    mpc_rows: list[dict[str, object]],
+    baseline_rows: list[dict[str, object]] | None,
+    path: Path,
+) -> None:
+    """Plot boundary O2 reserve, zero-O2 fraction, and DoC over time."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    def values(rows: list[dict[str, object]], key: str) -> np.ndarray:
+        return np.asarray(
+            [np.nan if row[key] is None else float(row[key]) for row in rows],
+            dtype=float,
+        )
+
+    times_s = values(mpc_rows, "time_s")
+    specifications = (
+        ("boundary_o2_reserve_mean", "Mean boundary O2 reserve"),
+        (
+            "boundary_o2_at_or_below_zero_fraction",
+            "Boundary fraction at O2 <= 0",
+        ),
+        ("boundary_doc_mean", "Mean boundary DoC"),
+    )
+    figure, axes = plt.subplots(3, 1, figsize=(8, 7), sharex=True)
+    for axis, (key, ylabel) in zip(axes, specifications):
+        axis.plot(
+            times_s,
+            values(mpc_rows, key),
+            color="tab:blue",
+            linewidth=2,
+            label="optimized MPC",
+        )
+        if baseline_rows is not None:
+            axis.plot(
+                values(baseline_rows, "time_s"),
+                values(baseline_rows, key),
+                color="tab:purple",
+                linestyle="--",
+                linewidth=2,
+                label="unoptimized repeated target-mask baseline",
+            )
+        axis.set_ylabel(ylabel)
+        axis.set_ylim(0.0, 1.02)
+        axis.grid(alpha=0.25)
+    axes[0].legend(loc="best", fontsize=8)
+    axes[-1].set_xlabel("Absolute process time (s)")
+    figure.suptitle("Near-boundary outside oxygen diagnostics")
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
 def save_initializer_component_metrics_csv(
     rows: list[dict[str, object]], path: Path
 ) -> None:
@@ -3074,6 +3516,157 @@ def run_demo(args: argparse.Namespace) -> None:
             "label": "unoptimized repeated target-mask baseline",
             "reason": "disabled by --no-baseline-target-mask",
         }
+    if native_forward_model is None or native_initial_state is None:
+        raise AssertionError("native forward model/state was not initialized")
+    outside_diagnostic_regions = build_outside_diagnostic_regions(
+        native_forward_model,
+        target_native,
+        args.target_threshold,
+    )
+    outside_diagnostic_rows = collect_outside_oxygen_diagnostics(
+        model=native_forward_model,
+        initial_state=native_initial_state,
+        applied_controls=applied_controls_native,
+        control_times_s=primary_control_times_s,
+        physics_steps_per_control=args.physics_steps_per_control,
+        regions=outside_diagnostic_regions,
+    )
+    outside_diagnostic_csv_path = (
+        args.output_dir / "outside_oxygen_diagnostics.csv"
+    )
+    save_outside_oxygen_diagnostics_csv(
+        outside_diagnostic_rows, outside_diagnostic_csv_path
+    )
+    baseline_outside_diagnostic_rows: list[dict[str, object]] | None = None
+    baseline_outside_diagnostic_csv_path: Path | None = None
+    if baseline_result is not None:
+        baseline_outside_diagnostic_rows = collect_outside_oxygen_diagnostics(
+            model=native_forward_model,
+            initial_state=native_initial_state,
+            applied_controls=[target_native.detach()] * args.control_steps,
+            control_times_s=primary_control_times_s,
+            physics_steps_per_control=args.physics_steps_per_control,
+            regions=outside_diagnostic_regions,
+        )
+        baseline_outside_diagnostic_csv_path = (
+            baseline_result.output_dir / "outside_oxygen_diagnostics.csv"
+        )
+        save_outside_oxygen_diagnostics_csv(
+            baseline_outside_diagnostic_rows,
+            baseline_outside_diagnostic_csv_path,
+        )
+    outside_diagnostic_plot_path = (
+        args.output_dir / "outside_oxygen_diagnostics.png"
+    )
+    save_outside_oxygen_diagnostics_plot(
+        outside_diagnostic_rows,
+        baseline_outside_diagnostic_rows,
+        outside_diagnostic_plot_path,
+    )
+    outside_diagnostic_comparison = (
+        build_outside_oxygen_diagnostic_comparison(
+            outside_diagnostic_rows,
+            baseline_outside_diagnostic_rows,
+        )
+    )
+    initial_boundary_o2 = _masked_field_summary(
+        native_initial_state.o2, outside_diagnostic_regions.boundary
+    )
+    outside_diagnostic_provenance = {
+        "reporting_only": True,
+        "used_by_controller": False,
+        "grid": "native physical/application grid",
+        "target_region_definition": (
+            f"normalized target > {args.target_threshold:g}"
+        ),
+        "outside_region_definition": "complement of target region",
+        "target_threshold_note": (
+            "normalized target pixels at or below the threshold, including "
+            "antialiased values, are classified as outside"
+        ),
+        "optical_length_px": outside_diagnostic_regions.optical_length_px,
+        "optical_length_method": (
+            outside_diagnostic_regions.optical_length_method
+        ),
+        "resolved_scattering_blur_size_m": (
+            native_forward_model.params.scattering_blur_size_m
+        ),
+        "resolved_pixel_pitch_m": native_forward_model.params.pixel_pitch_m,
+        "resolved_scattering_kernel_size_px": (
+            native_forward_model.scattering_kernel_size
+        ),
+        "boundary_band_radius_px": (
+            outside_diagnostic_regions.boundary_band_radius_px
+        ),
+        "boundary_region_definition": (
+            "outside pixels whose Euclidean center-to-target distance is at most "
+            "ceil(optical_length_px), with a one-pixel discrete minimum"
+        ),
+        "target_region_pixel_count": (
+            outside_diagnostic_regions.target_pixel_count
+        ),
+        "outside_region_pixel_count": (
+            outside_diagnostic_regions.outside_pixel_count
+        ),
+        "boundary_region_pixel_count": (
+            outside_diagnostic_regions.boundary_pixel_count
+        ),
+        "projector_control_source": "actual applied native projector control u",
+        "timeline_row_semantics": (
+            "projector control and local intensity are held over the interval "
+            "ending at time_s; O2 and DoC are sampled at that interval end"
+        ),
+        "collection_method": (
+            "reporting-only deterministic replay after MPC optimization using "
+            "the reused native model, initialized state, and realized controls"
+        ),
+        "local_intensity_source": (
+            "AIEModel.prepare_control(...).local_intensity"
+        ),
+        "local_intensity_units": "mW/cm^2",
+        "o2_units": "mJ/cm^2",
+        "initial_o2_source": "actual reused primary-rollout initial state",
+        "initial_boundary_o2_mean_mj_cm2": initial_boundary_o2["mean"],
+        "initial_boundary_o2_min_mj_cm2": initial_boundary_o2["min"],
+        "initial_boundary_o2_max_mj_cm2": initial_boundary_o2["max"],
+        "o2_reserve_definition": "O2 / O2_0 per pixel",
+        "o2_depletion_definition": "1 - O2 / O2_0 per pixel",
+        "reserve_reporting_thresholds": [0.75, 0.50, 0.25, 0.05],
+    }
+    outside_diagnostic_metadata = {
+        **outside_diagnostic_provenance,
+        "timeline_csv": outside_diagnostic_csv_path.name,
+        "comparison_plot": outside_diagnostic_plot_path.name,
+        "baseline_timeline_csv": (
+            None
+            if baseline_outside_diagnostic_csv_path is None
+            else "baseline_target_mask/outside_oxygen_diagnostics.csv"
+        ),
+        "summary": outside_oxygen_diagnostic_summary(
+            outside_diagnostic_rows
+        ),
+        "comparison": outside_diagnostic_comparison,
+    }
+    if baseline_result is not None:
+        assert baseline_outside_diagnostic_rows is not None
+        baseline_result.metrics_document["outside_oxygen_diagnostics"] = {
+            **outside_diagnostic_provenance,
+            "timeline_csv": "outside_oxygen_diagnostics.csv",
+            "comparison_plot": "../outside_oxygen_diagnostics.png",
+            "summary": outside_oxygen_diagnostic_summary(
+                baseline_outside_diagnostic_rows
+            ),
+            "comparison": outside_diagnostic_comparison,
+        }
+        (baseline_result.output_dir / "metrics.json").write_text(
+            json.dumps(
+                baseline_result.metrics_document,
+                indent=2,
+                allow_nan=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     component_metrics_path = args.output_dir / "component_metrics.csv"
     save_component_metrics_csv(final_metrics["component_rows"], component_metrics_path)
     if args.tracking_mode == "curve":
@@ -3266,6 +3859,7 @@ def run_demo(args: argparse.Namespace) -> None:
         "components": components_summary,
         "holes": holes_summary,
         "baseline_comparison": baseline_comparison,
+        "outside_oxygen_diagnostics": outside_diagnostic_metadata,
     }
     metrics_path = args.output_dir / "metrics.json"
     metrics_path.write_text(
@@ -3646,6 +4240,9 @@ def run_demo(args: argparse.Namespace) -> None:
     )
     if baseline_result is not None:
         print_baseline_comparison(baseline_comparison)
+    print_outside_oxygen_diagnostic_comparison(
+        outside_diagnostic_comparison
+    )
 
     print(f"resolution_mode={config.resolution_mode}")
     print(f"native_grid={config.native_shape}")
@@ -3675,7 +4272,17 @@ def run_demo(args: argparse.Namespace) -> None:
     print(f"saved component metrics: {component_metrics_path.resolve()}")
     if tracking_points_csv_path is not None:
         print(f"saved tracking-point statistics: {tracking_points_csv_path.resolve()}")
+    print(
+        "saved outside/O2 diagnostic timeline: "
+        f"{outside_diagnostic_csv_path.resolve()}"
+    )
+    print(f"saved outside/O2 diagnostic plot: {outside_diagnostic_plot_path.resolve()}")
     if baseline_result is not None:
+        assert baseline_outside_diagnostic_csv_path is not None
+        print(
+            "saved baseline outside/O2 diagnostic timeline: "
+            f"{baseline_outside_diagnostic_csv_path.resolve()}"
+        )
         print(f"saved baseline outputs: {baseline_result.output_dir.resolve()}")
     print(f"saved metrics summary: {metrics_path.resolve()}")
     print(f"saved outputs to {args.output_dir.resolve()}")
