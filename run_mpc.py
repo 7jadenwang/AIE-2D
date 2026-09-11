@@ -40,7 +40,11 @@ from aie_model import (
     AIEParameters,
     AIEState,
 )
-from aie_mpc import DifferentiableMPC
+from aie_mpc import (
+    DifferentiableMPC,
+    outside_o2_spatial_weight_map,
+    resolved_scattering_optical_length_px,
+)
 from aie_mpc_initialization import (
     DEFAULT_PHYSICS_INIT_ITERATIONS,
     DEFAULT_PHYSICS_INIT_LEARNING_RATE,
@@ -214,6 +218,8 @@ class OutsideDiagnosticRegions:
     target: torch.Tensor
     outside: torch.Tensor
     boundary: torch.Tensor
+    outside_o2_spatial_weights: torch.Tensor
+    outside_o2_spatial_weight_sum: float
     optical_length_px: float
     boundary_band_radius_px: int
     target_pixel_count: int
@@ -1698,10 +1704,13 @@ OUTSIDE_OXYGEN_DIAGNOSTIC_COLUMNS = (
     "boundary_o2_reserve_below_25pct_fraction",
     "boundary_o2_reserve_below_5pct_fraction",
     "boundary_o2_at_or_below_zero_fraction",
+    "weighted_outside_o2_reserve",
+    "weighted_outside_o2_depletion",
     "outside_doc_mean",
     "outside_doc_max",
     "boundary_doc_mean",
     "boundary_doc_max",
+    "weighted_outside_doc",
 )
 
 
@@ -1709,8 +1718,10 @@ def build_outside_diagnostic_regions(
     model: AIEModel,
     target: torch.Tensor,
     target_threshold: float,
+    *,
+    outside_o2_spatial_weights: torch.Tensor | None = None,
 ) -> OutsideDiagnosticRegions:
-    """Build the shared target/outside band from the resolved optical kernel."""
+    """Build the native binary band and loss-aligned outside weight map."""
 
     require_native_target(target)
     if target.device != model.device:
@@ -1722,18 +1733,30 @@ def build_outside_diagnostic_regions(
         raise ValueError("target has no pixels above target_threshold")
     outside_region = ~target_region
 
-    kernel = model.scattering_kernel_1d.detach().to(dtype=torch.float64)
-    coordinates = torch.arange(
-        kernel.numel(), device=kernel.device, dtype=kernel.dtype
+    optical_length_px = resolved_scattering_optical_length_px(model)
+    if outside_o2_spatial_weights is None:
+        outside_o2_spatial_weights = outside_o2_spatial_weight_map(
+            outside_region.to(dtype=model.dtype),
+            optical_length_px,
+        )
+    else:
+        if tuple(outside_o2_spatial_weights.shape) != tuple(target.shape):
+            raise ValueError(
+                "outside O2 diagnostic weights must match the native target shape"
+            )
+        outside_o2_spatial_weights = outside_o2_spatial_weights.detach().to(
+            device=model.device,
+            dtype=model.dtype,
+        )
+        if not bool(torch.isfinite(outside_o2_spatial_weights).all()) or bool(
+            (outside_o2_spatial_weights < 0).any()
+        ):
+            raise ValueError(
+                "outside O2 diagnostic weights must be finite and nonnegative"
+            )
+    outside_o2_spatial_weight_sum = float(
+        outside_o2_spatial_weights.sum().item()
     )
-    coordinates = coordinates - (kernel.numel() - 1) / 2
-    kernel_sum = kernel.sum()
-    if not bool(torch.isfinite(kernel).all()) or float(kernel_sum) <= 0.0:
-        raise ValueError("resolved scattering kernel is not finite and positive")
-    optical_variance_px2 = float(
-        (kernel * coordinates.square()).sum() / kernel_sum
-    )
-    optical_length_px = math.sqrt(max(0.0, optical_variance_px2))
     boundary_band_radius_px = max(1, math.ceil(optical_length_px))
     outside_array = outside_region.detach().cpu().numpy().astype(bool)
     distance_to_target_px = ndimage.distance_transform_edt(outside_array)
@@ -1747,14 +1770,16 @@ def build_outside_diagnostic_regions(
         target=target_region,
         outside=outside_region,
         boundary=boundary_region,
+        outside_o2_spatial_weights=outside_o2_spatial_weights,
+        outside_o2_spatial_weight_sum=outside_o2_spatial_weight_sum,
         optical_length_px=optical_length_px,
         boundary_band_radius_px=boundary_band_radius_px,
         target_pixel_count=int(target_region.sum().item()),
         outside_pixel_count=int(outside_region.sum().item()),
         boundary_pixel_count=int(boundary_region.sum().item()),
         optical_length_method=(
-            "RMS width from the second spatial moment of the resolved native "
-            "AIEModel.scattering_kernel_1d"
+            "2-D radial RMS width from the second spatial moment of the "
+            "resolved native AIEModel.scattering_kernel_2d"
         ),
     )
 
@@ -1803,14 +1828,26 @@ def _boundary_o2_diagnostics(
             "boundary_o2_reserve_below_5pct_fraction": None,
             "boundary_o2_at_or_below_zero_fraction": None,
         }
-    if not bool(torch.isfinite(initial_values).all()) or not bool(
-        (initial_values > 0).all()
-    ):
-        raise ValueError(
-            "boundary O2 reserve requires finite, positive initialized O2 at "
-            "every boundary pixel"
-        )
-    reserve_values = o2_values / initial_values
+    valid_reference = torch.isfinite(initial_values) & (initial_values > 0)
+    if not bool(valid_reference.any()):
+        return {
+            "boundary_o2_mean_mj_cm2": o2_summary["mean"],
+            "boundary_o2_min_mj_cm2": o2_summary["min"],
+            "boundary_o2_reserve_mean": None,
+            "boundary_o2_reserve_min": None,
+            "boundary_o2_depletion_mean": None,
+            "boundary_o2_depletion_max": None,
+            "boundary_o2_reserve_below_75pct_fraction": None,
+            "boundary_o2_reserve_below_50pct_fraction": None,
+            "boundary_o2_reserve_below_25pct_fraction": None,
+            "boundary_o2_reserve_below_5pct_fraction": None,
+            "boundary_o2_at_or_below_zero_fraction": float(
+                (o2_values <= 0).float().mean()
+            ),
+        }
+    reserve_values = (
+        o2_values[valid_reference] / initial_values[valid_reference]
+    )
     depletion_values = 1.0 - reserve_values
     reserve_mean = float(reserve_values.mean())
     reserve_min = float(reserve_values.min())
@@ -1837,6 +1874,58 @@ def _boundary_o2_diagnostics(
     }
 
 
+def _weighted_outside_state_diagnostics(
+    o2: torch.Tensor,
+    doc: torch.Tensor,
+    initial_o2: torch.Tensor,
+    regions: OutsideDiagnosticRegions,
+) -> dict[str, float | None]:
+    """Apply the controller's optical-distance weights to realized fields."""
+
+    if not (
+        tuple(o2.shape)
+        == tuple(doc.shape)
+        == tuple(initial_o2.shape)
+        == tuple(regions.outside_o2_spatial_weights.shape)
+    ):
+        raise ValueError("weighted outside diagnostic fields must have equal shape")
+    if regions.outside_o2_spatial_weight_sum <= 0.0:
+        return {
+            "weighted_outside_o2_reserve": None,
+            "weighted_outside_o2_depletion": None,
+            "weighted_outside_doc": None,
+        }
+    active_weights = regions.outside_o2_spatial_weights > 0
+    weights = regions.outside_o2_spatial_weights[active_weights]
+    initial_values = initial_o2[active_weights]
+    denominator = regions.outside_o2_spatial_weight_sum
+    weighted_doc = float(
+        (weights * doc[active_weights]).sum() / denominator
+    )
+    valid_reference = torch.isfinite(initial_values) & (initial_values > 0)
+    if not bool(valid_reference.any()):
+        return {
+            "weighted_outside_o2_reserve": None,
+            "weighted_outside_o2_depletion": None,
+            "weighted_outside_doc": weighted_doc,
+        }
+    valid_weights = weights[valid_reference]
+    valid_weight_sum = float(valid_weights.sum())
+    reserve = (
+        o2[active_weights][valid_reference] / initial_values[valid_reference]
+    )
+    depletion = 1.0 - reserve
+    return {
+        "weighted_outside_o2_reserve": float(
+            (valid_weights * reserve).sum() / valid_weight_sum
+        ),
+        "weighted_outside_o2_depletion": float(
+            (valid_weights * depletion).sum() / valid_weight_sum
+        ),
+        "weighted_outside_doc": weighted_doc,
+    }
+
+
 def collect_outside_oxygen_diagnostics(
     *,
     model: AIEModel,
@@ -1858,7 +1947,7 @@ def collect_outside_oxygen_diagnostics(
     state = initial_state.detach()
     if tuple(state.shape) != tuple(regions.target.shape):
         raise ValueError("diagnostic initial state and regions must have equal shape")
-    initial_o2 = state.o2.detach()
+    initial_o2 = state.o2.detach().clone()
     rows: list[dict[str, object]] = []
     with torch.no_grad():
         for time_s, control in zip(control_times_s, applied_controls):
@@ -1904,6 +1993,14 @@ def collect_outside_oxygen_diagnostics(
             row.update(
                 _boundary_o2_diagnostics(
                     state.o2, initial_o2, regions.boundary
+                )
+            )
+            row.update(
+                _weighted_outside_state_diagnostics(
+                    state.o2,
+                    state.doc,
+                    initial_o2,
+                    regions,
                 )
             )
             rows.append(row)
@@ -1976,6 +2073,35 @@ def outside_oxygen_diagnostic_summary(
         "final_boundary_doc_max": _diagnostic_aggregate(
             rows, "boundary_doc_max", "final"
         ),
+        "final_weighted_outside_o2_reserve": _diagnostic_aggregate(
+            rows, "weighted_outside_o2_reserve", "final"
+        ),
+        "final_weighted_outside_o2_depletion": _diagnostic_aggregate(
+            rows, "weighted_outside_o2_depletion", "final"
+        ),
+        "final_weighted_outside_doc": _diagnostic_aggregate(
+            rows, "weighted_outside_doc", "final"
+        ),
+    }
+
+
+def outside_oxygen_weighted_timeline(
+    rows: list[dict[str, object]],
+) -> dict[str, list[float | None]]:
+    """Return realized quantities using the loss's exact spatial weights."""
+
+    keys = (
+        "time_s",
+        "weighted_outside_o2_reserve",
+        "weighted_outside_o2_depletion",
+        "weighted_outside_doc",
+    )
+    return {
+        key: [
+            None if row[key] is None else float(row[key])
+            for row in rows
+        ]
+        for key in keys
     }
 
 
@@ -2025,6 +2151,11 @@ def print_outside_oxygen_diagnostic_comparison(
         "final_boundary_o2_at_or_below_zero_fraction": "fraction O2 <= 0",
         "final_boundary_doc_mean": "mean boundary DoC",
         "final_boundary_doc_max": "max boundary DoC",
+        "final_weighted_outside_o2_reserve": "final weighted mean O2 reserve",
+        "final_weighted_outside_o2_depletion": (
+            "final weighted mean O2 depletion"
+        ),
+        "final_weighted_outside_doc": "final weighted mean outside DoC",
     }
 
     def format_value(value: object) -> str:
@@ -2046,7 +2177,7 @@ def save_outside_oxygen_diagnostics_plot(
     baseline_rows: list[dict[str, object]] | None,
     path: Path,
 ) -> None:
-    """Plot boundary O2 reserve, zero-O2 fraction, and DoC over time."""
+    """Plot loss-weighted O2 reserve plus binary-boundary diagnostics."""
 
     import matplotlib
 
@@ -2061,15 +2192,24 @@ def save_outside_oxygen_diagnostics_plot(
 
     times_s = values(mpc_rows, "time_s")
     specifications = (
-        ("boundary_o2_reserve_mean", "Mean boundary O2 reserve"),
+        (
+            "weighted_outside_o2_reserve",
+            "Mean O₂ reserve",
+            "MPC O₂-loss weights (native-expanded in coarse mode)",
+        ),
         (
             "boundary_o2_at_or_below_zero_fraction",
-            "Boundary fraction at O2 <= 0",
+            "Fraction O₂ ≤ 0",
+            "Binary near-boundary outside region",
         ),
-        ("boundary_doc_mean", "Mean boundary DoC"),
+        (
+            "boundary_doc_mean",
+            "Mean boundary DoC",
+            "Binary near-boundary outside region",
+        ),
     )
     figure, axes = plt.subplots(3, 1, figsize=(8, 7), sharex=True)
-    for axis, (key, ylabel) in zip(axes, specifications):
+    for axis, (key, ylabel, region_label) in zip(axes, specifications):
         axis.plot(
             times_s,
             values(mpc_rows, key),
@@ -2087,11 +2227,12 @@ def save_outside_oxygen_diagnostics_plot(
                 label="unoptimized repeated target-mask baseline",
             )
         axis.set_ylabel(ylabel)
+        axis.set_title(region_label, fontsize=9)
         axis.set_ylim(0.0, 1.02)
         axis.grid(alpha=0.25)
     axes[0].legend(loc="best", fontsize=8)
     axes[-1].set_xlabel("Absolute process time (s)")
-    figure.suptitle("Near-boundary outside oxygen diagnostics")
+    figure.suptitle("Outside oxygen diagnostics")
     figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     figure.savefig(path, dpi=180)
     plt.close(figure)
@@ -2723,6 +2864,7 @@ def run_demo(args: argparse.Namespace) -> None:
         f"{args.target_weight:g}/{args.outside_weight:g}/"
         f"{args.energy_weight:g}/{args.smoothness_weight:g}"
     )
+    print(f"outside O2 protection weight: {args.outside_o2_weight:g}")
     if doc_reference is not None:
         condition = doc_reference.metadata["condition"]
         thresholds = doc_reference.metadata.get("threshold_times_s", {})
@@ -2759,7 +2901,7 @@ def run_demo(args: argparse.Namespace) -> None:
             print(f"  t={checkpoint_time_s:.2f} s -> DoC={required_doc:.4f}")
         print(
             "target-side tracking is evaluated only at listed checkpoints; "
-            "outside/energy/smoothness penalties remain dense"
+            "outside-DoC/outside-O2/energy/smoothness penalties remain dense"
         )
     if args.tracking_variable == "reaction-progress":
         if checkpoints:
@@ -2794,6 +2936,7 @@ def run_demo(args: argparse.Namespace) -> None:
         model if config.resolution_mode == "native" else None
     )
     state = model.initialize_state(config.optimization_shape)
+    optimization_process_initial_o2 = state.o2.detach().clone()
     native_initial_state: AIEState | None = (
         state.detach() if config.resolution_mode == "native" else None
     )
@@ -2815,11 +2958,25 @@ def run_demo(args: argparse.Namespace) -> None:
         target_threshold=args.target_threshold,
         target_weight=args.target_weight,
         outside_weight=args.outside_weight,
+        outside_o2_weight=args.outside_o2_weight,
         energy_weight=args.energy_weight,
         smoothness_weight=args.smoothness_weight,
         num_iterations=args.iterations,
         learning_rate=args.learning_rate,
     )
+    print("O2_reference = absolute_process_t0")
+    if args.outside_o2_weight > 0.0:
+        print(
+            "optical_length_definition = "
+            "2d_radial_rms_scattering_kernel"
+        )
+        print(
+            "optical_length_px: "
+            f"{controller.outside_o2_optical_length_px:.6g} "
+            "(optimization grid)"
+        )
+        print("O2_spatial_weighting = exp(-distance/L_opt)")
+        print("stabilized_exponential_weights = true")
     physics_initialization: PhysicsAwareInitializationResult | None = None
     initial_guess_projector_native: torch.Tensor | None = None
     initial_guess_local_intensity_native: torch.Tensor | None = None
@@ -3008,6 +3165,7 @@ def run_demo(args: argparse.Namespace) -> None:
     applied_controls_optimization: list[torch.Tensor] = []
     applied_controls_native: list[torch.Tensor] = []
     optimization_histories: list[list[float]] = []
+    optimization_final_loss_components: list[dict[str, float]] = []
     optimization_control_times_s: list[float] = []
     optimization_reference_doc: list[float] = []
     optimization_target_doc: list[float] = []
@@ -3053,6 +3211,7 @@ def run_demo(args: argparse.Namespace) -> None:
             state,
             initial_guess=guess,
             current_process_time_s=current_process_time_s,
+            process_initial_o2=optimization_process_initial_o2,
         )
         applied_control = optimized_controls[0].detach().clone()
         state = model.advance(
@@ -3079,6 +3238,21 @@ def run_demo(args: argparse.Namespace) -> None:
         applied_controls_optimization.append(applied_control)
         applied_controls_native.append(applied_native)
         optimization_histories.append(info["loss_history"])
+        final_cost_components = info["final_cost_components"]
+        optimization_final_loss_components.append(
+            {
+                name: float(final_cost_components[name])
+                for name in (
+                    "target_loss",
+                    "outside_doc_loss",
+                    "outside_o2_loss",
+                    "weighted_outside_o2_loss",
+                    "energy_loss",
+                    "smoothness_loss",
+                    "total_loss",
+                )
+            }
+        )
         if config.resolution_mode == "coarse":
             save_grayscale(
                 applied_control,
@@ -3164,6 +3338,9 @@ def run_demo(args: argparse.Namespace) -> None:
             f"{target_doc_mean:.4f}/{target_doc_min:.4f}/"
             f"{target_doc_max:.4f}/{target_doc_std:.4f} "
             f"out={outside_doc_mean:.4f} "
+            "O2loss(raw/weighted)="
+            f"{final_cost_components['outside_o2_loss']:.5f}/"
+            f"{final_cost_components['weighted_outside_o2_loss']:.5f} "
             f"track_rmse={running_text} "
             f"mask_mean={float(applied_control.mean()):.3f} solve={elapsed:.2f}s"
         )
@@ -3518,10 +3695,21 @@ def run_demo(args: argparse.Namespace) -> None:
         }
     if native_forward_model is None or native_initial_state is None:
         raise AssertionError("native forward model/state was not initialized")
+    controller_outside_o2_spatial_weights = controller.outside_o2_spatial_weights
+    if controller_outside_o2_spatial_weights is None:
+        controller_outside_o2_spatial_weights = outside_o2_spatial_weight_map(
+            controller.outside_region,
+            controller.outside_o2_optical_length_px,
+        )
+    native_loss_spatial_weights = recover_control_to_native(
+        controller_outside_o2_spatial_weights,
+        config,
+    ).detach()
     outside_diagnostic_regions = build_outside_diagnostic_regions(
         native_forward_model,
         target_native,
         args.target_threshold,
+        outside_o2_spatial_weights=native_loss_spatial_weights,
     )
     outside_diagnostic_rows = collect_outside_oxygen_diagnostics(
         model=native_forward_model,
@@ -3574,8 +3762,45 @@ def run_demo(args: argparse.Namespace) -> None:
     )
     outside_diagnostic_provenance = {
         "reporting_only": True,
-        "used_by_controller": False,
+        "diagnostic_values_used_by_controller": False,
+        "spatial_weight_map_definition_shared_with_controller": True,
+        "weighted_diagnostic_spatial_weight_source": (
+            "exact MPC controller weight map on the optimization grid when the "
+            "loss is enabled, or the identical shared-helper map when disabled; "
+            "unchanged in native mode and constant-block expanded to the native "
+            "replay grid in coarse mode"
+        ),
+        "weighted_diagnostic_outside_region_definition": (
+            f"optimization-grid normalized target <= {args.target_threshold:g}; "
+            "constant-block expanded for native realized-state reporting"
+        ),
+        "weighted_diagnostic_controller_grid_shape": list(
+            controller_outside_o2_spatial_weights.shape
+        ),
+        "weighted_diagnostic_native_grid_shape": list(
+            native_loss_spatial_weights.shape
+        ),
+        "weighted_diagnostic_block_expansion_factor": config.coarsen_factor,
+        "weighted_diagnostic_optical_length_px": (
+            controller.outside_o2_optical_length_px
+        ),
+        "weighted_diagnostic_optical_length_grid": (
+            "MPC optimization/controller grid"
+        ),
+        "weighted_diagnostic_scattering_kernel_shape_px": list(
+            model.scattering_kernel_2d.shape[-2:]
+        ),
+        "weighted_diagnostic_pixel_pitch_m": model.params.pixel_pitch_m,
+        "weighted_diagnostic_normalization_note": (
+            "constant-block expansion repeats every controller weight equally, "
+            "so the common multiplicity cancels in the normalized weighted mean"
+        ),
+        "weighted_diagnostic_field_sampling": (
+            "controller-grid outside weights applied to native realized-state "
+            "fields; equivalently, to block-averaged native fields in coarse mode"
+        ),
         "grid": "native physical/application grid",
+        "O2_reference": "absolute_process_t0",
         "target_region_definition": (
             f"normalized target > {args.target_threshold:g}"
         ),
@@ -3585,8 +3810,25 @@ def run_demo(args: argparse.Namespace) -> None:
             "antialiased values, are classified as outside"
         ),
         "optical_length_px": outside_diagnostic_regions.optical_length_px,
+        "optical_length_grid": "native physical/application grid",
+        "optical_length_definition": "2d_radial_rms_scattering_kernel",
+        "optical_length_formula": (
+            "sqrt(sum(K_2D[y,x] * (x^2 + y^2)) / sum(K_2D))"
+        ),
         "optical_length_method": (
             outside_diagnostic_regions.optical_length_method
+        ),
+        "O2_spatial_weighting": "exp(-distance/L_opt)",
+        "stabilized_exponential_weights": True,
+        "stabilized_exponential_weight_definition": (
+            "exp(-(distance - minimum outside distance)/L_opt); the common "
+            "factor cancels in every normalized weighted mean"
+        ),
+        "outside_o2_spatial_weight_sum": (
+            outside_diagnostic_regions.outside_o2_spatial_weight_sum
+        ),
+        "controller_outside_o2_spatial_weight_sum": float(
+            controller_outside_o2_spatial_weights.sum().item()
         ),
         "resolved_scattering_blur_size_m": (
             native_forward_model.params.scattering_blur_size_m
@@ -3594,6 +3836,9 @@ def run_demo(args: argparse.Namespace) -> None:
         "resolved_pixel_pitch_m": native_forward_model.params.pixel_pitch_m,
         "resolved_scattering_kernel_size_px": (
             native_forward_model.scattering_kernel_size
+        ),
+        "resolved_scattering_kernel_shape_px": list(
+            native_forward_model.scattering_kernel_2d.shape[-2:]
         ),
         "boundary_band_radius_px": (
             outside_diagnostic_regions.boundary_band_radius_px
@@ -3625,12 +3870,32 @@ def run_demo(args: argparse.Namespace) -> None:
         ),
         "local_intensity_units": "mW/cm^2",
         "o2_units": "mJ/cm^2",
-        "initial_o2_source": "actual reused primary-rollout initial state",
+        "initial_o2_source": (
+            "actual native physical state immediately after initialization at "
+            "absolute process t=0; reused for MPC and baseline diagnostics"
+        ),
         "initial_boundary_o2_mean_mj_cm2": initial_boundary_o2["mean"],
         "initial_boundary_o2_min_mj_cm2": initial_boundary_o2["min"],
         "initial_boundary_o2_max_mj_cm2": initial_boundary_o2["max"],
         "o2_reserve_definition": "O2 / O2_0 per pixel",
         "o2_depletion_definition": "1 - O2 / O2_0 per pixel",
+        "o2_ratio_reference_validity": (
+            "reserve/depletion ratios use pixels with finite positive absolute-t0 "
+            "O2; ratio fields are null when no such pixels exist, while raw O2 "
+            "and DoC diagnostics remain available"
+        ),
+        "weighted_outside_o2_reserve_definition": (
+            "sum_over_positive_controller_weights(w_p * O2_p/O2_p(t=0)) / "
+            "sum_over_positive_controller_weights(w_p)"
+        ),
+        "weighted_outside_o2_depletion_definition": (
+            "sum_over_positive_controller_weights(w_p * "
+            "(1 - O2_p/O2_p(t=0))) / sum_over_positive_controller_weights(w_p)"
+        ),
+        "weighted_outside_doc_definition": (
+            "sum_over_positive_controller_weights(w_p * DoC_p) / "
+            "sum_over_positive_controller_weights(w_p)"
+        ),
         "reserve_reporting_thresholds": [0.75, 0.50, 0.25, 0.05],
     }
     outside_diagnostic_metadata = {
@@ -3645,6 +3910,9 @@ def run_demo(args: argparse.Namespace) -> None:
         "summary": outside_oxygen_diagnostic_summary(
             outside_diagnostic_rows
         ),
+        "weighted_timeline": outside_oxygen_weighted_timeline(
+            outside_diagnostic_rows
+        ),
         "comparison": outside_diagnostic_comparison,
     }
     if baseline_result is not None:
@@ -3654,6 +3922,9 @@ def run_demo(args: argparse.Namespace) -> None:
             "timeline_csv": "outside_oxygen_diagnostics.csv",
             "comparison_plot": "../outside_oxygen_diagnostics.png",
             "summary": outside_oxygen_diagnostic_summary(
+                baseline_outside_diagnostic_rows
+            ),
+            "weighted_timeline": outside_oxygen_weighted_timeline(
                 baseline_outside_diagnostic_rows
             ),
             "comparison": outside_diagnostic_comparison,
@@ -3749,6 +4020,69 @@ def run_demo(args: argparse.Namespace) -> None:
         **final_metrics["holes"],
         "details": final_metrics["hole_rows"],
     }
+    outside_o2_loss_metadata = {
+        "outside_o2_weight": args.outside_o2_weight,
+        "O2_reference": "absolute_process_t0",
+        "outside_o2_loss_definition": (
+            "J_O2 = mean over all H predicted stages of "
+            "sum_outside(w_p * q_p,k^2) / sum_outside(w_p), with "
+            "q_p,k = clamp((O2_absolute_process_t0,p - O2_pred,p,k) / "
+            "max(O2_absolute_process_t0,p, epsilon), 0, 1)"
+        ),
+        "O2_spatial_weighting": "exp(-distance/L_opt)",
+        "outside_o2_spatial_weighting": (
+            "w_p = exp(-d_p / optical_length_px) on outside pixels; "
+            "a common minimum-distance exponent is removed before evaluation "
+            "because it cancels exactly in the normalized weighted mean"
+        ),
+        "stabilized_exponential_weights": True,
+        "optical_length_px": controller.outside_o2_optical_length_px,
+        "optical_length_definition": "2d_radial_rms_scattering_kernel",
+        "optical_length_formula": (
+            "sqrt(sum(K_2D[y,x] * (x^2 + y^2)) / sum(K_2D))"
+        ),
+        "optical_length_method": (
+            "2-D radial RMS width from the second spatial moment of the resolved "
+            "AIEModel.scattering_kernel_2d"
+        ),
+        "optical_length_grid": "MPC optimization/controller grid",
+        "resolved_scattering_kernel_shape_px": list(
+            model.scattering_kernel_2d.shape[-2:]
+        ),
+        "optimization_pixel_pitch_m": config.optimization_pixel_pitch_m,
+        "dense_over_prediction_horizon": True,
+        "target_pixels_excluded": True,
+        "process_initial_o2_source": (
+            "detached clone of the optimization-grid physical state.o2 "
+            "immediately after initialization at absolute process t=0, reused "
+            "unchanged for every receding MPC solve"
+        ),
+        "reference_time_s": 0.0,
+        "denominator_epsilon": optimization_params.division_epsilon,
+        "zero_optical_length_policy": (
+            "exact normalized optical_length_px -> 0 limit: nearest outside "
+            "pixels retain equal weight"
+        ),
+        "enabled": args.outside_o2_weight > 0.0,
+        "zero_weight_behavior": (
+            "O2 loss arithmetic and objective addition are bypassed"
+        ),
+    }
+    mpc_loss_diagnostics = {
+        "scope": (
+            "final candidate prediction horizon for each realized receding "
+            "MPC solve"
+        ),
+        "component_semantics": (
+            "named *_loss fields are raw horizon costs; "
+            "weighted_outside_o2_loss is the additive weighted contribution; "
+            "total_loss is the complete weighted objective"
+        ),
+        "times_s": (primary_control_times_s - control_dt_s).tolist(),
+        "time_semantics": "absolute process time at the start of each MPC solve",
+        "realized_interval_end_times_s": primary_control_times_s.tolist(),
+        "components": optimization_final_loss_components,
+    }
     metrics_document = {
         "schema_version": 1,
         "tracking_variable": args.tracking_variable,
@@ -3794,6 +4128,7 @@ def run_demo(args: argparse.Namespace) -> None:
             "prediction_horizon_seconds": args.horizon * control_dt_s,
             "target_weight": args.target_weight,
             "outside_weight": args.outside_weight,
+            "outside_o2_weight": args.outside_o2_weight,
             "energy_weight": args.energy_weight,
             "smoothness_weight": args.smoothness_weight,
         },
@@ -3860,6 +4195,8 @@ def run_demo(args: argparse.Namespace) -> None:
         "holes": holes_summary,
         "baseline_comparison": baseline_comparison,
         "outside_oxygen_diagnostics": outside_diagnostic_metadata,
+        "outside_o2_protection": outside_o2_loss_metadata,
+        "mpc_loss_diagnostics": mpc_loss_diagnostics,
     }
     metrics_path = args.output_dir / "metrics.json"
     metrics_path.write_text(
@@ -5889,6 +6226,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-weight", type=float, default=1.0)
     parser.add_argument("--outside-weight", type=float, default=0.5)
+    parser.add_argument(
+        "--outside-o2-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "additive dense prediction-horizon penalty on weighted outside O2 "
+            "depletion (default: 0.0, disabled)"
+        ),
+    )
     parser.add_argument("--energy-weight", type=float, default=1e-4)
     parser.add_argument("--smoothness-weight", type=float, default=1e-2)
     parser.add_argument(

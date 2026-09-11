@@ -8,11 +8,72 @@ from typing import Any
 
 import numpy as np
 import torch
+from scipy import ndimage
 
 from aie_fine_grid import initialize_projector_mask
 from aie_model import AIEModel, AIEState
 from doc_reference import DoCReferenceCurve
 from tracking_config import TrackingSpecification
+
+
+def resolved_scattering_optical_length_px(model: AIEModel) -> float:
+    """Return the 2-D radial RMS width of the resolved scattering kernel."""
+
+    kernel = model.scattering_kernel_2d.detach()[0, 0].to(dtype=torch.float64)
+    y_coordinates = torch.arange(
+        kernel.shape[0], device=kernel.device, dtype=kernel.dtype
+    )
+    x_coordinates = torch.arange(
+        kernel.shape[1], device=kernel.device, dtype=kernel.dtype
+    )
+    y_coordinates = y_coordinates - (kernel.shape[0] - 1) / 2
+    x_coordinates = x_coordinates - (kernel.shape[1] - 1) / 2
+    radial_distance_squared = (
+        y_coordinates[:, None].square() + x_coordinates[None, :].square()
+    )
+    kernel_sum = kernel.sum()
+    if not bool(torch.isfinite(kernel).all()) or float(kernel_sum) <= 0.0:
+        raise ValueError("resolved scattering kernel is not finite and positive")
+    variance_px2 = float(
+        (kernel * radial_distance_squared).sum() / kernel_sum
+    )
+    return math.sqrt(max(0.0, variance_px2))
+
+
+def outside_o2_spatial_weight_map(
+    outside_region: torch.Tensor,
+    optical_length_px: float,
+) -> torch.Tensor:
+    """Build fixed exponential distance weights on a spatial grid."""
+
+    if not outside_region.dtype.is_floating_point:
+        raise ValueError("outside_region must use a floating-point dtype")
+
+    outside_array = outside_region.detach().cpu().numpy().astype(bool)
+    weights_array = np.zeros(outside_array.shape, dtype=np.float64)
+    if np.any(outside_array):
+        distance_px = ndimage.distance_transform_edt(outside_array)
+        minimum_outside_distance_px = float(distance_px[outside_array].min())
+        if optical_length_px > 0.0:
+            # Subtracting the common minimum distance is mathematically neutral
+            # after normalization and prevents underflow for subpixel kernels.
+            relative_distance_px = (
+                distance_px[outside_array] - minimum_outside_distance_px
+            )
+            weights_array[outside_array] = np.exp(
+                -relative_distance_px / optical_length_px
+            )
+        else:
+            # Exact normalized L -> 0 limit: retain only nearest outside pixels.
+            weights_array[
+                outside_array
+                & np.isclose(distance_px, minimum_outside_distance_px)
+            ] = 1.0
+    return torch.as_tensor(
+        weights_array,
+        device=outside_region.device,
+        dtype=outside_region.dtype,
+    )
 
 
 class DifferentiableMPC:
@@ -38,6 +99,7 @@ class DifferentiableMPC:
         target_threshold: float = 0.5,
         target_weight: float = 1.0,
         outside_weight: float = 0.5,
+        outside_o2_weight: float = 0.0,
         energy_weight: float = 1e-4,
         smoothness_weight: float = 1e-2,
         num_iterations: int = 30,
@@ -79,9 +141,15 @@ class DifferentiableMPC:
             raise ValueError(
                 "tracking_specification cannot be combined with legacy reference_curve/checkpoints arguments"
             )
+        if not math.isfinite(outside_o2_weight):
+            raise ValueError(
+                "outside_o2_weight must be finite, got "
+                f"{outside_o2_weight}"
+            )
         weights = {
             "target_weight": target_weight,
             "outside_weight": outside_weight,
+            "outside_o2_weight": outside_o2_weight,
             "energy_weight": energy_weight,
             "smoothness_weight": smoothness_weight,
         }
@@ -119,6 +187,20 @@ class DifferentiableMPC:
         self.physics_steps_per_control = physics_steps_per_control
         self.target_weight = target_weight
         self.outside_weight = outside_weight
+        self.outside_o2_weight = outside_o2_weight
+        self.outside_o2_optical_length_px = (
+            resolved_scattering_optical_length_px(model)
+        )
+        self.outside_o2_spatial_weights: torch.Tensor | None = None
+        self.outside_o2_spatial_weight_sum = 0.0
+        if outside_o2_weight > 0.0:
+            self.outside_o2_spatial_weights = outside_o2_spatial_weight_map(
+                self.outside_region,
+                self.outside_o2_optical_length_px,
+            )
+            self.outside_o2_spatial_weight_sum = float(
+                self.outside_o2_spatial_weights.sum()
+            )
         self.energy_weight = energy_weight
         self.smoothness_weight = smoothness_weight
         self.num_iterations = num_iterations
@@ -157,6 +239,7 @@ class DifferentiableMPC:
         initial_guess: torch.Tensor | None = None,
         *,
         current_process_time_s: float,
+        process_initial_o2: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         """Optimize the nonlinear prediction horizon with PyTorch Adam.
 
@@ -177,6 +260,15 @@ class DifferentiableMPC:
         logits = torch.nn.Parameter(torch.logit(bounded_guess))
         optimizer = torch.optim.Adam([logits], lr=self.learning_rate)
         fixed_state = current_state.detach()
+        if self.outside_o2_weight > 0.0:
+            if process_initial_o2 is None:
+                raise ValueError(
+                    "enabled outside O2 protection requires the absolute-process "
+                    "t=0 O2 state"
+                )
+            absolute_process_initial_o2 = process_initial_o2.detach()
+        else:
+            absolute_process_initial_o2 = None
 
         loss_history: list[float] = []
         gradient_norm_history: list[float] = []
@@ -191,6 +283,7 @@ class DifferentiableMPC:
                 predicted_states,
                 controls,
                 current_process_time_s=current_process_time_s,
+                process_initial_o2=absolute_process_initial_o2,
             )
             if not bool(torch.isfinite(loss)):
                 raise FloatingPointError("MPC loss became NaN or Inf")
@@ -213,6 +306,7 @@ class DifferentiableMPC:
                 final_states,
                 optimized_controls,
                 current_process_time_s=current_process_time_s,
+                process_initial_o2=absolute_process_initial_o2,
             )
             final_loss_value = float(final_loss)
             loss_history.append(final_loss_value)
@@ -312,6 +406,7 @@ class DifferentiableMPC:
         controls: torch.Tensor,
         *,
         current_process_time_s: float,
+        process_initial_o2: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Evaluate equal-weight absolute-time tracking and existing penalties."""
 
@@ -333,6 +428,33 @@ class DifferentiableMPC:
                 f"controls must have shape {expected_control_shape}, got "
                 f"{tuple(controls.shape)}"
             )
+        if self.outside_o2_weight > 0.0:
+            if process_initial_o2 is None:
+                raise ValueError(
+                    "enabled outside O2 protection requires the absolute-process "
+                    "t=0 O2 state"
+                )
+            if tuple(process_initial_o2.shape) != tuple(self.target.shape):
+                raise ValueError(
+                    "process_initial_o2 shape must match the controller target"
+                )
+            if process_initial_o2.device != self.model.device:
+                raise ValueError(
+                    "process_initial_o2 and the controller model must share a device"
+                )
+            if process_initial_o2.dtype != self.model.dtype:
+                raise ValueError(
+                    "process_initial_o2 and the controller model must share a dtype"
+                )
+            if not bool(torch.isfinite(process_initial_o2).all()):
+                raise ValueError("process_initial_o2 contains NaN or Inf")
+            o2_denominator = process_initial_o2.clamp_min(
+                self.model.params.division_epsilon
+            )
+            if self.outside_o2_spatial_weights is None:
+                raise AssertionError("outside O2 spatial weights were not initialized")
+        else:
+            o2_denominator = None
 
         desired_doc_stages = self.desired_doc_stages(current_process_time_s)
         stage_reference, target_tracking_active = self.stage_tracking_values(
@@ -342,6 +464,7 @@ class DifferentiableMPC:
         target_stage_costs: list[torch.Tensor] = []
         active_weights: list[torch.Tensor] = []
         outside_stage_costs: list[torch.Tensor] = []
+        outside_o2_stage_costs: list[torch.Tensor] = []
         for stage_index, (predicted_state, desired_doc) in enumerate(
             zip(predicted_states, desired_doc_stages)
         ):
@@ -393,6 +516,25 @@ class DifferentiableMPC:
                     predicted_state.doc.square(), self.outside_region
                 )
             )
+            if self.outside_o2_weight > 0.0:
+                assert process_initial_o2 is not None
+                assert o2_denominator is not None
+                assert self.outside_o2_spatial_weights is not None
+                depletion_fraction = (
+                    (process_initial_o2 - predicted_state.o2) / o2_denominator
+                ).clamp(min=0.0, max=1.0)
+                if self.outside_o2_spatial_weight_sum > 0.0:
+                    outside_o2_stage_costs.append(
+                        (
+                            self.outside_o2_spatial_weights
+                            * depletion_fraction.square()
+                        ).sum()
+                        / self.outside_o2_spatial_weight_sum
+                    )
+                else:
+                    outside_o2_stage_costs.append(
+                        predicted_state.o2.sum() * 0.0
+                    )
         target_cost = (
             torch.stack(target_stage_costs).sum()
             / torch.stack(active_weights).sum().clamp_min(1e-12)
@@ -411,11 +553,28 @@ class DifferentiableMPC:
             + self.energy_weight * energy_cost
             + self.smoothness_weight * smoothness_cost
         )
+        if self.outside_o2_weight > 0.0:
+            outside_o2_cost = torch.stack(outside_o2_stage_costs).mean()
+            weighted_outside_o2_cost = (
+                self.outside_o2_weight * outside_o2_cost
+            )
+            total = total + weighted_outside_o2_cost
+        else:
+            outside_o2_cost = total.new_zeros(())
+            weighted_outside_o2_cost = outside_o2_cost
         return total, {
             "target": target_cost,
             "outside": outside_cost,
+            "outside_o2": outside_o2_cost,
             "energy": energy_cost,
             "smoothness": smoothness_cost,
+            "target_loss": target_cost,
+            "outside_doc_loss": outside_cost,
+            "outside_o2_loss": outside_o2_cost,
+            "energy_loss": energy_cost,
+            "smoothness_loss": smoothness_cost,
+            "weighted_outside_o2_loss": weighted_outside_o2_cost,
+            "total_loss": total,
         }
 
     def _tracking_loss(self, error: torch.Tensor) -> torch.Tensor:
