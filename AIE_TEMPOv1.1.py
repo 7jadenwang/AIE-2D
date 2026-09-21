@@ -15,7 +15,7 @@ imagesD=[]
 imagesO=[]
 imagesT=[]
 
-folder_name = 'test_repro'
+folder_name = 'test_repro_local'
 #folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
@@ -142,7 +142,7 @@ TEMPO_dfsvty=float(40e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
 # PROBLEM: CANNOT be too small to create Gaussian kernel? 
 # What if it is smaller than 1 pixel?
 
-intensity=70 #mW/cm2
+intensity=30 #mW/cm2
 #Change intensity with different data pls
 
 pre_slope=2e-3 #DoC per mJ/cm2 of delivered light: slight upward creep during O2/TEMPO inhibition
@@ -150,10 +150,10 @@ pre_cap=0.015 #ceiling on that pre-cure creep before real curing starts
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(10/dt)
+total_steps=int(6/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(10 / dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(6/ dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=33.8011 #(26/09/01)
@@ -171,7 +171,7 @@ Totalinhibtion=0
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/sync_rect.png')
+img=Image.open('./GEO/snowflake_hollow.png')
 img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
@@ -194,7 +194,7 @@ target=(target/max_val).astype(np.float32) #Normalize to [0,1]
 H,W=target.shape
 DoC_radius=25
 mask=torch.tensor(target.copy() * 255, dtype=torch.float32, device=device) # scale to [0,255] to match /255 in physics
-opt_mask=torch.nn.Parameter(mask.clone()*3) #shape(H,W)
+opt_mask=torch.nn.Parameter(mask.clone()*1) #shape(H,W)
 
 grayscale_floor=15.0  #Zak needs it
 # min opt_mask value enforced inside the cure zone, so cured pixels never rely 100% on scatter
@@ -246,8 +246,7 @@ grad_smooth_kernel_np=cv2.getGaussianKernel(grad_smooth_kernel_size,grad_smooth_
 grad_smooth_kernel=torch.from_numpy(np.outer(grad_smooth_kernel_np,grad_smooth_kernel_np)).view(1,1,grad_smooth_kernel_size,grad_smooth_kernel_size).to(torch.float32).to(device)
 grad_smooth_pad=grad_smooth_kernel_size//2
 
-numEpochs=1000
-#if epoch is 1, it just simulate without optimization
+numEpochs=1#if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]
 MidpointDoC=[]
@@ -281,8 +280,8 @@ for epoch in range(numEpochs):
     #B = 0.0121*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.5623 #0mMTEMPO (26/09/01)
     #B = 0.0108*(blur_mask.clamp(min=1e-12)/255 * intensity) + 0.2541 #5mMTEMPO (26/09/01)
     
-    B = 0.1299 * intensity^0.5645   #0mMTEMPO (26/09/01) (R^2 = 0.9970)
-    #B = 0.0433 * intensity^0.7454   #5mMTEMPO (26/09/01)(R^2 = 0.9892)
+    B = 0.1299 * (blur_mask.clamp(min=1e-12)/255 * intensity)**0.5645   #0mMTEMPO (26/09/01) (R^2 = 0.9970)
+    #B = 0.0433 * (blur_mask.clamp(min=1e-12)/255 * intensity)**0.7454   #5mMTEMPO (26/09/01)(R^2 = 0.9892)
     
     #print(B[H//2,W//2].item()) # for debug
 
@@ -304,14 +303,23 @@ for epoch in range(numEpochs):
 
         energy=(blur_mask.clamp(min=1e-12)/255)*intensity*dt
         
-        O2next=torch.clamp(O2_diffused-energy, min=0)
-        O2.append(O2next)
-        TEMPOnext=torch.where(O2next<=0, torch.clamp(TEMPO_diffused-energy, min=0), TEMPO_diffused)
-        TEMPO.append(TEMPOnext)
-        #print(step) if O2next.min()<=0 else None
-        
-        # Tim_accmulation_Method
-        Dosenext = torch.where((O2next<=0) & (TEMPOnext<=0), Dose[-1]+energy-O2_diffused-TEMPO_diffused, Dose[-1])
+# O2 must be consumed before TEMPO within each time step.
+        O2next = torch.clamp(O2_diffused - energy, min=0)
+        energy_after_o2 = torch.clamp(energy - O2_diffused, min=0)
+
+# TEMPO receives only the energy left after O2 has been depleted.
+        TEMPOnext = torch.clamp(TEMPO_diffused - energy_after_o2, min=0)
+
+# Any energy remaining after both inhibitors becomes curing dose.
+        energy_after_inhibition = torch.clamp(
+            energy_after_o2 - TEMPO_diffused, min=0
+        )
+        both_depleted = (O2next <= 0) & (TEMPOnext <= 0)
+        Dosenext = torch.where(
+            both_depleted,
+            Dose[-1] + energy_after_inhibition,
+            Dose[-1],
+        )
         Dose.append(Dosenext)
         t=Dosenext/(blur_mask.clamp(min=1e-12)/255*intensity)
     
