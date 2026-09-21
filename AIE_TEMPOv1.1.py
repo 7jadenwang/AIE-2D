@@ -15,7 +15,7 @@ imagesD=[]
 imagesO=[]
 imagesT=[]
 
-folder_name = 'test_repro_local'
+folder_name = 'test_repro_Gaussian'
 #folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
@@ -305,10 +305,12 @@ for epoch in range(numEpochs):
         
 # O2 must be consumed before TEMPO within each time step.
         O2next = torch.clamp(O2_diffused - energy, min=0)
+        O2.append(O2next)
         energy_after_o2 = torch.clamp(energy - O2_diffused, min=0)
 
 # TEMPO receives only the energy left after O2 has been depleted.
         TEMPOnext = torch.clamp(TEMPO_diffused - energy_after_o2, min=0)
+        TEMPO.append(TEMPOnext)
 
 # Any energy remaining after both inhibitors becomes curing dose.
         energy_after_inhibition = torch.clamp(
