@@ -15,7 +15,7 @@ imagesD=[]
 imagesO=[]
 imagesT=[]
 
-folder_name = 'test_repro_Gaussian'
+folder_name = 'test_repro_Gaussian_NODiffusion'
 #folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
@@ -150,7 +150,7 @@ pre_cap=0.015 #ceiling on that pre-cure creep before real curing starts
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(11/dt)
+total_steps=int(6/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
 tstepT2 = int(6/ dt)  # But need to change with DoC profile with distinct intensity
@@ -171,7 +171,7 @@ Totalinhibtion=0
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/snowflake.png')
+img=Image.open('./GEO/hollow.png')
 img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
