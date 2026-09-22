@@ -15,7 +15,7 @@ imagesD=[]
 imagesO=[]
 imagesT=[]
 
-folder_name = 'test_repro_Gaussian'
+folder_name = 'test_repro_Laplacian_Permeability'
 #folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
@@ -129,18 +129,76 @@ def foregroundSSIMCuringLoss(finalDoC, target, foreground_threshold=15/255, wind
     return 1 - foreground_score
 
 
+def segment_enclosed_hollows(target, threshold):
+    """Return background components enclosed by the intended cured target."""
+    background = (np.asarray(target) <= threshold).astype(np.uint8)
+    component_count, labels = cv2.connectedComponents(background, connectivity=4)
+    edge_labels = np.unique(np.concatenate((
+        labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1],
+    )))
+    enclosed_labels = np.setdiff1d(np.arange(1, component_count), edge_labels)
+    return np.isin(labels, enclosed_labels)
+
+
+def diffuse_fick_2d(
+    field, diffusivity, dt, dx, hollow_mask=None, barrier_mask=None,
+    barrier_doc=None, activation_doc=0.35, permeability=1.0,
+):
+    """Advance a 2-D inhibitor field, optionally limiting hollow-edge flux."""
+    coupling = diffusivity * dt / dx**2
+    if not 0 <= coupling <= 0.25:
+        raise ValueError("D * dt / dx**2 must be between 0 and 0.25")
+    if hollow_mask is not None:
+        return _diffuse_with_hollow_barrier(
+            field, coupling, hollow_mask, barrier_mask, barrier_doc,
+            activation_doc, permeability,
+        )
+    stencil = field.new_tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3)
+    padded = F.pad(field.view(1, 1, *field.shape), (1, 1, 1, 1), mode='reflect')
+    laplacian = F.conv2d(padded, stencil)[0, 0]
+    return field + coupling * laplacian
+
+
+def _diffuse_with_hollow_barrier(
+    field, coupling, hollow_mask, barrier_mask, barrier_doc,
+    activation_doc, permeability,
+):
+    """Use symmetric face fluxes so a reduced interface remains conservative."""
+    hollow = hollow_mask.to(device=field.device, dtype=torch.bool)
+    barrier = barrier_mask.to(device=field.device, dtype=torch.bool) & ~hollow
+    doc = barrier_doc.to(device=field.device, dtype=field.dtype)
+
+    def neighbors(image):
+        padded = F.pad(image.view(1, 1, *image.shape), (1, 1, 1, 1), mode='reflect')[0, 0]
+        return padded[:-2, 1:-1], padded[2:, 1:-1], padded[1:-1, :-2], padded[1:-1, 2:]
+
+    change = torch.zeros_like(field)
+    for neighbor, neighbor_hollow, neighbor_barrier, neighbor_doc in zip(
+        neighbors(field), neighbors(hollow.float()), neighbors(barrier.float()), neighbors(doc)
+    ):
+        neighbor_hollow = neighbor_hollow.bool()
+        neighbor_barrier = neighbor_barrier.bool()
+        crosses_hollow = hollow != neighbor_hollow
+        activated = crosses_hollow & (
+            (barrier & (doc >= activation_doc)) |
+            (neighbor_barrier & (neighbor_doc >= activation_doc))
+        )
+        face_permeability = torch.where(
+            activated, field.new_tensor(permeability), torch.ones_like(field)
+        )
+        change = change + face_permeability * (neighbor - field)
+    return field + coupling * change
+
+
 #Experimental Physical data
 dx,dy=float(7.6e-6),float(7.6e-6)
 #dx,dy=float(4.905e-6),float(4.905e-6) # for 432x468 DLP
 
 blur_size=50e-6 # used to be 600um to 7.4um pxs
  # set it zeros to optimize without scattering
-O2_dfsvty=float(400e-12) #m2^2/s 2000um2/s
+O2_dfsvty=float(100e-12) #m2/s = 40 um2/s
 #dfsvty=float(200e-12) #O2 concentration-dependent
-TEMPO_dfsvty=float(400e-12) #m2^2/s, TEMPO diffusion coefficient 400um2
-#The TEMPO now is still too small for diffusion.
-# PROBLEM: CANNOT be too small to create Gaussian kernel? 
-# What if it is smaller than 1 pixel?
+TEMPO_dfsvty=float(40e-12) #m2/s = 40 um2/s
 
 intensity=30 #mW/cm2
 #Change intensity with different data pls
@@ -153,7 +211,7 @@ dt=float(0.05) #s, time step
 total_steps=int(11/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(6/ dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(3.5/ dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=33.8011 #(26/09/01)
@@ -201,33 +259,20 @@ grayscale_floor=15.0  #Zak needs it
 #How will if affect? PENDING
 cure_zone=mask>grayscale_floor # define a target fre ground.
 
-#Swiss O2diff convo
-O2_sigma=(2*O2_dfsvty*dt)**0.5
-O2_sigma=O2_sigma/dx
-print(f'''O2 diffusion sigma: {O2_sigma:.2f} pixels''')
-if O2_sigma<1:
-    print("Warning: O2 diffusion is too small.")
-    #quit()
-O2_kernel_size=int((O2_sigma-0.8)/0.3+1)*2+1
-print(f'O2 kernel size: {O2_kernel_size}')
-O2_kernel=cv2.getGaussianKernel(O2_kernel_size,O2_sigma) #set very small values to 0
-O2_diff=torch.from_numpy(np.outer(O2_kernel,O2_kernel)).view(1,1,O2_kernel_size,O2_kernel_size).to(torch.float32).to(device)
-print(O2_diff)
-O2_pad=O2_kernel_size//2
+# Hollow transport model: target-enclosed background remains a fixed region,
+# while its surrounding cured band becomes a barrier once it reaches 35% DoC.
+HOLLOW_ACTIVATION_DOC=0.35
+HOLLOW_PERMEABILITY=0.15  # Effective cross-boundary transport fraction; tune in [0, 1].
+hollow_mask_np=segment_enclosed_hollows(target, grayscale_floor/255)
+hollow_mask=torch.tensor(hollow_mask_np, dtype=torch.bool, device=device)
+hollow_neighbor_kernel=mask.new_tensor([[0, 1, 0], [1, 0, 1], [0, 1, 0]]).view(1, 1, 3, 3)
+hollow_neighbors=F.conv2d(hollow_mask.float().view(1, 1, H, W), hollow_neighbor_kernel, padding=1)[0, 0]
+barrier_mask=cure_zone & (hollow_neighbors > 0)
+print(f'Hollow pixels: {hollow_mask.sum().item()}, barrier pixels: {barrier_mask.sum().item()}')
 
-#Swiss TEMPOdiff convo
-TEMPO_sigma=(2*TEMPO_dfsvty*dt)**0.5
-TEMPO_sigma=TEMPO_sigma/dx
-print(f'''TEMPO diffusion sigma: {TEMPO_sigma:.2f} pixels''')
-if TEMPO_sigma<1:
-    print("Warning: TEMPO diffusion is too small.")
-    #quit()
-TEMPO_kernel_size=int((TEMPO_sigma-0.8)/0.3+1)*2+1
-print(f'TEMPO kernel size: {TEMPO_kernel_size}')
-TEMPO_kernel=cv2.getGaussianKernel(TEMPO_kernel_size,TEMPO_sigma*0.8) #smaller sigma -> slower diffusion -> extreme situation: local TEMPO
-TEMPO_diff=torch.from_numpy(np.outer(TEMPO_kernel,TEMPO_kernel)).view(1,1,TEMPO_kernel_size,TEMPO_kernel_size).to(torch.float32).to(device)
-print(TEMPO_diff)
-TEMPO_pad=TEMPO_kernel_size//2
+# Explicit Fick diffusion: fixed 3x3 stencil with no-flux outer boundaries.
+print(f'O2 diffusion coupling: {O2_dfsvty * dt / dx**2:.4f}')
+print(f'TEMPO diffusion coupling: {TEMPO_dfsvty * dt / dx**2:.4f}')
 
 #Light Scattering Gaussian Blur convo
 ls_kernel_size=int(blur_size/dx) if int(blur_size/dx)%2!=0 else int(blur_size/dx)+1
@@ -246,7 +291,8 @@ grad_smooth_kernel_np=cv2.getGaussianKernel(grad_smooth_kernel_size,grad_smooth_
 grad_smooth_kernel=torch.from_numpy(np.outer(grad_smooth_kernel_np,grad_smooth_kernel_np)).view(1,1,grad_smooth_kernel_size,grad_smooth_kernel_size).to(torch.float32).to(device)
 grad_smooth_pad=grad_smooth_kernel_size//2
 
-numEpochs=1#if epoch is 1, it just simulate without optimization
+numEpochs=1
+#if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]
 MidpointDoC=[]
@@ -289,26 +335,24 @@ for epoch in range(numEpochs):
     tic=T.time()
 
     for step in range(total_steps):
-        # For O2 diffusion
-        O2_pre=O2[-1].view(1,1,H,W)
-        O2_padded=F.pad(O2_pre,pad=(O2_pad,O2_pad,O2_pad,O2_pad),mode='reflect')
-        O2_diffused=F.conv2d(O2_padded,O2_diff)[0,0]
-        #O2_diffused=O2[-1] #For local O2 with no diffusion
-
-        # For TEMPO diffusion
-        TEMPO_pre=TEMPO[-1].view(1,1,H,W)
-        TEMPO_padded=F.pad(TEMPO_pre,pad=(TEMPO_pad,TEMPO_pad,TEMPO_pad,TEMPO_pad),mode='reflect')
-        TEMPO_diffused=F.conv2d(TEMPO_padded,TEMPO_diff)[0,0]
-        #TEMPO_diffused=TEMPO[-1] #For local TEMPO with no diffusion
+        # Fixed-stencil Fick diffusion for O2 and TEMPO.
+        O2_diffused=diffuse_fick_2d(
+            O2[-1], O2_dfsvty, dt, dx, hollow_mask, barrier_mask,
+            DoC[-1], HOLLOW_ACTIVATION_DOC, HOLLOW_PERMEABILITY,
+        )
+        TEMPO_diffused=diffuse_fick_2d(
+            TEMPO[-1], TEMPO_dfsvty, dt, dx, hollow_mask, barrier_mask,
+            DoC[-1], HOLLOW_ACTIVATION_DOC, HOLLOW_PERMEABILITY,
+        )
 
         energy=(blur_mask.clamp(min=1e-12)/255)*intensity*dt
         
-# O2 must be consumed before TEMPO within each time step.
+        # O2 must be consumed before TEMPO within each time step.
         O2next = torch.clamp(O2_diffused - energy, min=0)
         O2.append(O2next)
         energy_after_o2 = torch.clamp(energy - O2_diffused, min=0)
 
-# TEMPO receives only the energy left after O2 has been depleted.
+        # TEMPO receives only the energy left after O2 has been depleted.
         TEMPOnext = torch.clamp(TEMPO_diffused - energy_after_o2, min=0)
         TEMPO.append(TEMPOnext)
 

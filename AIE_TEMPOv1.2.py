@@ -135,7 +135,7 @@ def diffuse_fick_2d(field, diffusivity, dt, dx):
     if not 0 <= coupling <= 0.25:
         raise ValueError("D * dt / dx**2 must be between 0 and 0.25")
     stencil = field.new_tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3)
-    padded = F.pad(field.view(1, 1, *field.shape), (1, 1, 1, 1), mode='replicate')
+    padded = F.pad(field.view(1, 1, *field.shape), (1, 1, 1, 1), mode='reflect')
     laplacian = F.conv2d(padded, stencil)[0, 0]
     return field + coupling * laplacian
 
@@ -144,7 +144,7 @@ def diffuse_fick_2d(field, diffusivity, dt, dx):
 dx,dy=float(7.6e-6),float(7.6e-6)
 #dx,dy=float(4.905e-6),float(4.905e-6) # for 432x468 DLP
 
-blur_size=30e-6 # used to be 600um to 7.4um pxs
+blur_size=50e-6 # used to be 600um to 7.4um pxs
  # set it zeros to optimize without scattering
 O2_dfsvty=float(100e-12) #m2/s = 40 um2/s
 #dfsvty=float(200e-12) #O2 concentration-dependent
@@ -158,10 +158,10 @@ pre_cap=0.015 #ceiling on that pre-cure creep before real curing starts
 
 dt=float(0.05) #s, time step
 #0.2 for 5fps
-total_steps=int(6/dt)
+total_steps=int(11/dt)
 tstepT0 = int(0.2 / dt) # only for loss and optimization.
 tstepT1 = int(2.0 / dt) # When epoch is 1 for the simulation, Loss does not matter
-tstepT2 = int(6/ dt)  # But need to change with DoC profile with distinct intensity
+tstepT2 = int(3.5/ dt)  # But need to change with DoC profile with distinct intensity
 
 #O2inhibition=O2_inhibition_time * intensity #mJ/cm2 
 O2inhibition=33.8011 #(26/09/01)
@@ -179,7 +179,7 @@ Totalinhibtion=0
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/snowflake_hollow.png')
+img=Image.open('./GEO/snowflake.png')
 img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
@@ -230,7 +230,7 @@ grad_smooth_kernel_np=cv2.getGaussianKernel(grad_smooth_kernel_size,grad_smooth_
 grad_smooth_kernel=torch.from_numpy(np.outer(grad_smooth_kernel_np,grad_smooth_kernel_np)).view(1,1,grad_smooth_kernel_size,grad_smooth_kernel_size).to(torch.float32).to(device)
 grad_smooth_pad=grad_smooth_kernel_size//2
 
-numEpochs=1000
+numEpochs=1
 #if epoch is 1, it just simulate without optimization
 optimizer=torch.optim.Adam([opt_mask],lr=0.77)
 loss_history=[]
@@ -319,7 +319,7 @@ for epoch in range(numEpochs):
 
         DoC.append(DoCnext)
         if epoch==numEpochs-1: # for the final epoch
-            if step%2==0:
+            if step%10==0:
                 DoCprint = DoCnext #DoC range [0,1]
                 DoCprint.data.clamp_(min = 0)
                 DoCprint = DoCprint.detach().cpu().numpy() * 255 # for 8-bit image
