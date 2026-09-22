@@ -32,6 +32,7 @@
 
 # generated simulation/optimization output images (AIE_TEMPOv1.1.py), any run folder
 **/aaa_*.png
+**/exp_*.tiff
 **/DoC_*.png
 **/O2_*.png
 **/TEMPO_*.png
