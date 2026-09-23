@@ -316,9 +316,8 @@ for epoch in range(numEpochs):
         energy_after_inhibition = torch.clamp(
             energy_after_o2 - TEMPO_diffused, min=0
         )
-        both_depleted = (O2next <= 0) & (TEMPOnext <= 0)
         Dosenext = torch.where(
-            both_depleted,
+            (O2next <= 0) & (TEMPOnext <= 0),
             Dose[-1] + energy_after_inhibition,
             Dose[-1],
         )
