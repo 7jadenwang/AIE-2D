@@ -15,7 +15,7 @@ imagesD=[]
 imagesO=[]
 imagesT=[]
 
-folder_name = 'test_repro_Laplacian_Diffusion'
+folder_name = 'test_repro_Laplacian_Permeability'
 #folder_name ='260825\\120mW_5mMol\\260825_120mW_5mMol_Sync_rect_5s_Opt'
 save_path=os.path.join('.\\',folder_name)
 #save_path=os.path.join('.\\260722_circles_TPEoac\\LShape_Simulations',folder_name)
@@ -129,15 +129,65 @@ def foregroundSSIMCuringLoss(finalDoC, target, foreground_threshold=15/255, wind
     return 1 - foreground_score
 
 
-def diffuse_fick_2d(field, diffusivity, dt, dx):
-    """Advance a 2-D inhibitor field by one explicit Fick-diffusion step."""
+def segment_enclosed_hollows(target, threshold):
+    """Return background components enclosed by the intended cured target."""
+    background = (np.asarray(target) <= threshold).astype(np.uint8)
+    component_count, labels = cv2.connectedComponents(background, connectivity=4)
+    edge_labels = np.unique(np.concatenate((
+        labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1],
+    )))
+    enclosed_labels = np.setdiff1d(np.arange(1, component_count), edge_labels)
+    return np.isin(labels, enclosed_labels)
+
+
+def diffuse_fick_2d(
+    field, diffusivity, dt, dx, hollow_mask=None, barrier_mask=None,
+    barrier_doc=None, activation_doc=0.35, permeability=1.0,
+):
+    """Advance a 2-D inhibitor field, optionally limiting hollow-edge flux."""
     coupling = diffusivity * dt / dx**2
     if not 0 <= coupling <= 0.25:
         raise ValueError("D * dt / dx**2 must be between 0 and 0.25")
+    if hollow_mask is not None:
+        return _diffuse_with_hollow_barrier(
+            field, coupling, hollow_mask, barrier_mask, barrier_doc,
+            activation_doc, permeability,
+        )
     stencil = field.new_tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]]).view(1, 1, 3, 3)
     padded = F.pad(field.view(1, 1, *field.shape), (1, 1, 1, 1), mode='reflect')
     laplacian = F.conv2d(padded, stencil)[0, 0]
     return field + coupling * laplacian
+
+
+def _diffuse_with_hollow_barrier(
+    field, coupling, hollow_mask, barrier_mask, barrier_doc,
+    activation_doc, permeability,
+):
+    """Use symmetric face fluxes so a reduced interface remains conservative."""
+    hollow = hollow_mask.to(device=field.device, dtype=torch.bool)
+    barrier = barrier_mask.to(device=field.device, dtype=torch.bool) & ~hollow
+    doc = barrier_doc.to(device=field.device, dtype=field.dtype)
+
+    def neighbors(image):
+        padded = F.pad(image.view(1, 1, *image.shape), (1, 1, 1, 1), mode='reflect')[0, 0]
+        return padded[:-2, 1:-1], padded[2:, 1:-1], padded[1:-1, :-2], padded[1:-1, 2:]
+
+    change = torch.zeros_like(field)
+    for neighbor, neighbor_hollow, neighbor_barrier, neighbor_doc in zip(
+        neighbors(field), neighbors(hollow.float()), neighbors(barrier.float()), neighbors(doc)
+    ):
+        neighbor_hollow = neighbor_hollow.bool()
+        neighbor_barrier = neighbor_barrier.bool()
+        crosses_hollow = hollow != neighbor_hollow
+        activated = crosses_hollow & (
+            (barrier & (doc >= activation_doc)) |
+            (neighbor_barrier & (neighbor_doc >= activation_doc))
+        )
+        face_permeability = torch.where(
+            activated, field.new_tensor(permeability), torch.ones_like(field)
+        )
+        change = change + face_permeability * (neighbor - field)
+    return field + coupling * change
 
 
 #Experimental Physical data
@@ -179,7 +229,7 @@ Totalinhibtion=0
 TEMPOinhibition=max(0.0,Totalinhibtion - O2inhibition)
 #mJ/cm2 #clip = clamp
 
-img=Image.open('./GEO/snowflake.png')
+img=Image.open('./GEO/AMASK.png')
 img.save(f'./{folder_name}/aaa_target.png')
 print(f'Image mode:{img.mode}')
 # now the target is 16-bit. 
@@ -208,6 +258,17 @@ grayscale_floor=15.0  #Zak needs it
 # min opt_mask value enforced inside the cure zone, so cured pixels never rely 100% on scatter
 #How will if affect? PENDING
 cure_zone=mask>grayscale_floor # define a target fre ground.
+
+# Hollow transport model: target-enclosed background remains a fixed region,
+# while its surrounding cured band becomes a barrier once it reaches 35% DoC.
+HOLLOW_ACTIVATION_DOC=0.35
+HOLLOW_PERMEABILITY=0.15  # Effective cross-boundary transport fraction; tune in [0, 1].
+hollow_mask_np=segment_enclosed_hollows(target, grayscale_floor/255)
+hollow_mask=torch.tensor(hollow_mask_np, dtype=torch.bool, device=device)
+hollow_neighbor_kernel=mask.new_tensor([[0, 1, 0], [1, 0, 1], [0, 1, 0]]).view(1, 1, 3, 3)
+hollow_neighbors=F.conv2d(hollow_mask.float().view(1, 1, H, W), hollow_neighbor_kernel, padding=1)[0, 0]
+barrier_mask=cure_zone & (hollow_neighbors > 0)
+print(f'Hollow pixels: {hollow_mask.sum().item()}, barrier pixels: {barrier_mask.sum().item()}')
 
 # Explicit Fick diffusion: fixed 3x3 stencil with no-flux outer boundaries.
 print(f'O2 diffusion coupling: {O2_dfsvty * dt / dx**2:.4f}')
@@ -275,8 +336,14 @@ for epoch in range(numEpochs):
 
     for step in range(total_steps):
         # Fixed-stencil Fick diffusion for O2 and TEMPO.
-        O2_diffused=diffuse_fick_2d(O2[-1], O2_dfsvty, dt, dx)
-        TEMPO_diffused=diffuse_fick_2d(TEMPO[-1], TEMPO_dfsvty, dt, dx)
+        O2_diffused=diffuse_fick_2d(
+            O2[-1], O2_dfsvty, dt, dx, hollow_mask, barrier_mask,
+            DoC[-1], HOLLOW_ACTIVATION_DOC, HOLLOW_PERMEABILITY,
+        )
+        TEMPO_diffused=diffuse_fick_2d(
+            TEMPO[-1], TEMPO_dfsvty, dt, dx, hollow_mask, barrier_mask,
+            DoC[-1], HOLLOW_ACTIVATION_DOC, HOLLOW_PERMEABILITY,
+        )
 
         energy=(blur_mask.clamp(min=1e-12)/255)*intensity*dt
         
