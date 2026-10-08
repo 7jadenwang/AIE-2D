@@ -1,0 +1,326 @@
+%0 Journal Article
+%A O'Brien, Allison K.
+%A Bowman, Christopher N.
+%T Modeling the Effect of Oxygen on Photopolymerization Kinetics
+%J Macromolecular Theory and Simulations
+%D 2006
+%R 10.1002/mats.200500056
+%U https://doi.org/10.1002/mats.200500056
+
+%0 Journal Article
+%A Uzcategui, Ana C.
+%A Muralidharan, A.
+%A Ferguson, Virginia L.
+%A Bryant, Stephanie J.
+%A McLeod, Robert R.
+%T Understanding and Improving Mechanical Properties in 3D printed Parts Using a Dual-Cure Acrylate-Based Resin for Stereolithography
+%J Advanced Engineering Materials
+%D 2018
+%R 10.1002/adem.201800876
+%U https://doi.org/10.1002/adem.201800876
+
+%0 Journal Article
+%A Thijssen, Quinten
+%A Jaén Ortega, Antonio
+%A Vieira, Roniérik Pioli
+%A Van Vlierberghe, Sandra
+%T Radical inhibition in tomographic volumetric 3D printing for thiol-ene photoresists: From photorheology to printability
+%J Reactive and Functional Polymers
+%D 2024
+%V 205
+%P 106096
+%R 10.1016/j.reactfunctpolym.2024.106096
+%U https://doi.org/10.1016/j.reactfunctpolym.2024.106096
+
+%0 Journal Article
+%A Emami, Mohammad Mahdi
+%A Rosen, David W.
+%T Modeling of light field effect in deep vat polymerization for grayscale lithography application
+%J Additive Manufacturing
+%D 2020
+%V 36
+%P 101595
+%R 10.1016/j.addma.2020.101595
+%U https://doi.org/10.1016/j.addma.2020.101595
+
+%0 Journal Article
+%A Ji, Jiujiang
+%A Wang, Mengshi
+%A Hu, Miaomiao
+%A Mao, Liucheng
+%T 3D-printing AIE stereolithography resins with real-time monitored printing process to fabricate fluorescent objects
+%J Composites Part B: Engineering
+%D 2021
+%V 206
+%P 108526
+%R 10.1016/j.compositesb.2020.108526
+%U https://doi.org/10.1016/j.compositesb.2020.108526
+
+%0 Journal Article
+%A Wang, Yifan
+%A Zhang, Yanan
+%A Liang, Haiyi
+%A Sun, Xingyue
+%T Optimize projected mask images for improving three-dimensional printing accuracy for digital light processing based vat photopolymerization
+%J Additive Manufacturing
+%D 2024
+%V 88
+%P 104257
+%R 10.1016/j.addma.2024.104257
+%U https://doi.org/10.1016/j.addma.2024.104257
+
+%0 Journal Article
+%A Wang, Bin
+%A Engay, Einstom
+%A Stubbe, Peter R.
+%T Stiffness control in dual color tomographic volumetric 3D printing
+%J Nature Communications
+%D 2022
+%V 13
+%P 367
+%R 10.1038/s41467-022-28013-4
+%U https://doi.org/10.1038/s41467-022-28013-4
+
+%0 Journal Article
+%A Jessen, Luis L.
+%A Hansen, Kameron R.
+%A Crull, George B.
+%A Grover, Tanner L.
+%A Guymon, C. Allan
+%T In Situ NMR to Monitor Bulk Photopolymerization Kinetics
+%J ACS Macro Letters
+%D 2025
+%V 14
+%N 6
+%P 847-852
+%R 10.1021/acsmacrolett.5c00171
+%U https://doi.org/10.1021/acsmacrolett.5c00171
+
+%0 Journal Article
+%A Shim, Tae Soup
+%A Yang, Seung-Man
+%A Kim, Shin-Hyun
+%T Dynamic designing of microstructures by chemical gradient-mediated growth
+%J Nature Communications
+%D 2015
+%V 6
+%P 6584
+%R 10.1038/ncomms7584
+%U https://doi.org/10.1038/ncomms7584
+
+%0 Journal Article
+%A Classens, Koen
+%A Hafkamp, Thomas
+%A Westbeek, Steyn
+%A Remmers, Joris J. C.
+%A Weiland, Siep
+%T Multiphysical modeling and optimal control of material properties for photopolymerization processes
+%J Additive Manufacturing
+%D 2021
+%V 38
+%P 101520
+%R 10.1016/j.addma.2020.101520
+%U https://doi.org/10.1016/j.addma.2020.101520
+
+%0 Journal Article
+%A Guven, Ege
+%A Karpat, Yigit
+%A Cakmakci, Melih
+%T Improving the dimensional accuracy of micro parts 3D printed with projection-based continuous vat photopolymerization using a model-based grayscale optimization method
+%J Additive Manufacturing
+%D 2022
+%V 57
+%P 102954
+%R 10.1016/j.addma.2022.102954
+%U https://doi.org/10.1016/j.addma.2022.102954
+
+%0 Journal Article
+%A Zhang, Heyang
+%A Maier, Abby
+%A Mathews, Melvin
+%A Hu, Jingtong
+%A Zhao, Xiayun
+%T Development of open-architecture two-wavelength grayscale digital light processing for advanced vat photopolymerization
+%J Additive Manufacturing
+%D 2025
+%V 107
+%P 104818
+%R 10.1016/j.addma.2025.104818
+%U https://doi.org/10.1016/j.addma.2025.104818
+
+%0 Journal Article
+%A Killgore, Jason P.
+%A Kolibaba, Thomas J.
+%A Caplins, Benjamin W.
+%A Higgins, Callie I.
+%A Rezac, Jacob D.
+%T A Data-Driven Approach to Complex Voxel Predictions in Grayscale Digital Light Processing Additive Manufacturing Using U-Nets and Generative Adversarial Networks
+%J Small
+%D 2023
+%V 19
+%N 50
+%P e2301987
+%R 10.1002/smll.202301987
+%U https://doi.org/10.1002/smll.202301987
+
+%0 Journal Article
+%A Tumbleston, John R.
+%A Shirvanyants, David
+%A Ermoshkin, Nikita
+%A Janusziewicz, Rima
+%T Continuous liquid interface production of 3D objects
+%J Science
+%D 2015
+%V 347
+%N 6228
+%P 1349-1352
+%R 10.1126/science.aaa2397
+%U https://doi.org/10.1126/science.aaa2397
+
+%0 Journal Article
+%A O'Dea, Connor J.
+%A Scruggs, Evan P.
+%A Page, Zachariah A.
+%T Triplet-Triplet Annihilation Enhances Photochemical Curing Contrast for Vat-Based 3D Printing
+%J Advanced Functional Materials
+%D 2026
+%V 36
+%N 41
+%P e30758
+%R 10.1002/adfm.202530758
+%U https://doi.org/10.1002/adfm.202530758
+
+%0 Journal Article
+%A Tu, Jianwei
+%A Kashcooli, Yaser
+%A Alvarez, Nicolas J.
+%A Palmese, Giuseppe R.
+%T A Practical Framework for Predicting Conversion Profiles in Vat Photopolymerizations
+%J Additive Manufacturing
+%D 2022
+%V 59
+%P 103102
+%R 10.1016/j.addma.2022.103102
+%U https://doi.org/10.1016/j.addma.2022.103102
+
+%0 Journal Article
+%A Jariwala, Amit S.
+%A Ding, Fei
+%A Boddapati, Aparna
+%A Breedveld, Victor
+%A Grover, Martha A.
+%A Henderson, Clifford L.
+%A Rosen, David W.
+%T Modeling Effects of Oxygen Inhibition in Mask-Based Stereolithography
+%J Rapid Prototyping Journal
+%D 2011
+%V 17
+%N 3
+%P 168-175
+%R 10.1108/13552541111124734
+%U https://doi.org/10.1108/13552541111124734
+
+%0 Journal Article
+%A Taki, Kentaro
+%A Watanabe, Yoshihito
+%A Ito, Hiroshi
+%A Ohshima, Masahiro
+%T Effect of Oxygen Inhibition on the Kinetic Constants of the UV-Radical Photopolymerization of Diurethane Dimethacrylate/Photoinitiator Systems
+%J Macromolecules
+%D 2014
+%V 47
+%N 6
+%P 1906-1913
+%R 10.1021/ma402437q
+%U https://doi.org/10.1021/ma402437q
+
+%0 Journal Article
+%A Dendukuri, Dhananjaya
+%A Panda, Piyush
+%A Haghgooie, Ramin
+%A Kim, Jong Min
+%A Hatton, T. Alan
+%A Doyle, Patrick S.
+%T Modeling of Oxygen-Inhibited Free Radical Photopolymerization in a PDMS Microfluidic Device
+%J Macromolecules
+%D 2008
+%V 41
+%P 8547-8556
+%R 10.1021/ma801219w
+%U https://doi.org/10.1021/ma801219w
+
+%0 Journal Article
+%A Montgomery, S. Macrae
+%A Demoly, Frederic
+%A Zhou, Kun
+%A Qi, H. Jerry
+%T Pixel-Level Grayscale Manipulation to Improve Accuracy in Digital Light Processing 3D Printing
+%J Advanced Functional Materials
+%D 2023
+%V 33
+%N 17
+%P 2213252
+%R 10.1002/adfm.202213252
+%U https://doi.org/10.1002/adfm.202213252
+
+%0 Journal Article
+%A Pritchard, Zac D.
+%A de Beer, Martin P.
+%A Whelan, Ryan J.
+%A Scott, Timothy F.
+%A Burns, Mark A.
+%T Modeling and Correcting Cure-Through in Continuous Stereolithographic 3D Printing
+%J Advanced Materials Technologies
+%D 2019
+%V 4
+%P 1900700
+%R 10.1002/admt.201900700
+%U https://doi.org/10.1002/admt.201900700
+
+%0 Journal Article
+%A Liu, Han
+%A Liu, Yuhan
+%A Li, Kevin
+%A Zhao, Zhangji
+%A Schoenholz, Samuel S.
+%A Cubuk, Ekin D.
+%A Gupta, Puneet
+%A Bauchy, Mathieu
+%T End-to-End Differentiability and Tensor Processing Unit Computing to Accelerate Materials' Inverse Design
+%J npj Computational Materials
+%D 2023
+%V 9
+%P 121
+%R 10.1038/s41524-023-01080-x
+%U https://doi.org/10.1038/s41524-023-01080-x
+
+%0 Journal Article
+%A Stevens, Lynn M.
+%A Recker, Elizabeth A.
+%A Zhou, Kevin A.
+%A Garcia, Vincent G.
+%A Mason, Keldy S.
+%A Tagnon, Clotilde
+%A Abdelaziz, Nayera
+%A Page, Zachariah A.
+%T Counting All Photons: Efficient Optimization of Visible Light 3D Printing
+%J Advanced Materials Technologies
+%D 2023
+%V 8
+%P 2300052
+%R 10.1002/admt.202300052
+%U https://doi.org/10.1002/admt.202300052
+
+%0 Conference Proceedings
+%A Yap, Timothy
+%A Singh, Kushaal
+%A Chen, Xiaofeng
+%A O'Dea, Connor
+%A Crawford, Natalya K.
+%A Bae, Kyubin
+%A Page, Zachariah A.
+%A Cullinan, Michael
+%T Inversely Designed Projection Image Generation for Vat Photopolymerization in a Machine Learning Framework
+%B Proceedings of the ASME 2026 21st International Manufacturing Science and Engineering Conference
+%D 2026
+%P MSEC2026-180215

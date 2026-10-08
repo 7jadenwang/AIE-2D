@@ -1,0 +1,36 @@
+{
+  "canvas_px": [
+    2560,
+    1600
+  ],
+  "grayscale_policy": "Preserved exactly; no thresholding or resizing",
+  "base_layer_count": 1,
+  "base_exposure_s": 10.0,
+  "normal_exposure_s": 0.5,
+  "blast_gray": 43,
+  "blast_buffer_px": 20,
+  "outputs": [
+    {
+      "source": "D:\\Research\\AIE 2D\\python_mnf_packager\\input_images\\aaa_final_opt_mask.png",
+      "mnf": "D:\\Research\\AIE 2D\\python_mnf_packager\\mnf_output\\aaa_final_opt_mask.mnf",
+      "source_size_px": [
+        512,
+        320
+      ],
+      "paste_top_left_xy": [
+        1536,
+        640
+      ],
+      "nonzero_pixels": 4269,
+      "grayscale_levels": 250,
+      "layer_count": 3,
+      "blast_bbox_xyxy_exclusive": [
+        1611,
+        682,
+        2051,
+        968
+      ],
+      "verified": true
+    }
+  ]
+}
