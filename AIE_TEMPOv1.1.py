@@ -164,8 +164,8 @@ O2inhibition=12.6124 #(26/10/01)
 Totalinhibtion=67.9730
 #0 for no TEMPO inhibition
 #34.0231 for 1mMol TEMPO (26/10/01)
-#67.9730 for 1mMol TEMPO (26/10/01)
-#97.4406 for 1mMol TEMPO (26/10/01)
+#67.9730 for 3mMol TEMPO (26/10/01)
+#97.4406 for 5mMol TEMPO (26/10/01)
 
 #TEMPO_inibition_Time=Total_inhibition_time - O2_inhibition_time
 #TEMPOinhibition=TEMPO_inibition_Time * intensity #mJ/cm2
