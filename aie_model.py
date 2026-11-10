@@ -20,13 +20,14 @@ import torch.nn.functional as F
 from torch import nn
 
 from aie_fine_grid import expand_projector_mask
-from aie_reference import load_reference_config
+from aie_reference import load_reference_config, evaluate_b_law, b_law_description, validate_inhibition_condition
 
 
-DOC_HISTORY_MODE = "incremental_reaction_progress_v1"
+DOC_HISTORY_MODE = "incremental_reaction_progress_with_precure_v2"
 DOC_HISTORY_DESCRIPTION = (
-    "MPC-side time-varying extension; exactly reduces to the reference B/intensity "
-    "DoC law at constant intensity and is not separately experimentally calibrated"
+    "MPC-side incremental R extension; algebraically reduces to the reference "
+    "curing law at constant intensity. Inhibited DoC is the separate cumulative-light "
+    "pre-cure signal. Time-varying R is not separately experimentally calibrated."
 )
 
 
@@ -61,6 +62,11 @@ class AIEParameters:
     chain_growth_noise_enabled: bool
     b_slope: float
     b_intercept: float
+    b_law_type: str
+    b_coefficient: float
+    b_exponent: float
+    pre_slope: float
+    pre_cap: float
     b_condition_label: str
     minimum_normalized_intensity: float
     division_epsilon: float
@@ -116,6 +122,11 @@ class AIEParameters:
             chain_growth_noise_enabled=resolved.chain_growth_noise_enabled,
             b_slope=resolved.b_slope,
             b_intercept=resolved.b_intercept,
+            b_law_type=resolved.b_law_type,
+            b_coefficient=resolved.b_coefficient,
+            b_exponent=resolved.b_exponent,
+            pre_slope=resolved.pre_slope,
+            pre_cap=resolved.pre_cap,
             b_condition_label=resolved.b_condition_label,
             minimum_normalized_intensity=resolved.minimum_normalized_intensity,
             division_epsilon=resolved.division_epsilon,
@@ -180,6 +191,16 @@ class AIEParameters:
             "b_slope": self.b_slope,
             "b_intercept": self.b_intercept,
             "b_condition_label": self.b_condition_label,
+            "b_law_type": self.b_law_type,
+            "b_coefficient": self.b_coefficient,
+            "b_exponent": self.b_exponent,
+            "b_equation": b_law_description(self),
+            "pre_slope": self.pre_slope,
+            "pre_cap": self.pre_cap,
+            "precure_definition": "clip(pre_slope * cumulative_light, 0, pre_cap); inhibited branch only",
+            "reaction_progress_definition": "sum(B(I_k) * delta_curing_dose_k / I_k); excludes pre-cure",
+            "r_tracking_interpretation": "polymerization target -log(1-D*), not an inverse of pre-cure DoC",
+            "zero_intensity_convention": "authoritative optical floor retained; no additional intensity floor",
             "minimum_normalized_intensity": self.minimum_normalized_intensity,
             "division_epsilon": self.division_epsilon,
             "mask_grayscale_max": self.mask_grayscale_max,
@@ -207,6 +228,18 @@ class AIEParameters:
         }
 
     def __post_init__(self) -> None:
+        validate_inhibition_condition(
+            self.tempo_concentration_mM, self.o2_inhibition_mj_cm2,
+            self.total_inhibition_mj_cm2, self.reference_model_source,
+        )
+        if self.b_law_type not in ("affine", "power_law"):
+            raise ValueError("unsupported B law type")
+        if not all(isfinite(v) and v >= 0 for v in (
+            self.b_coefficient, self.b_exponent, self.pre_slope, self.pre_cap
+        )) or self.pre_cap > 1:
+            raise ValueError("invalid B/pre-cure parameters")
+        if self.b_law_type == "power_law" and (self.b_coefficient <= 0 or self.b_exponent <= 0):
+            raise ValueError("power-law coefficient/exponent must be positive")
         positive = {
             "pixel_pitch_m": self.pixel_pitch_m,
             "native_pixel_pitch_m": self.native_pixel_pitch_m,
@@ -290,6 +323,7 @@ class AIEState:
     dose: torch.Tensor
     reaction_progress: torch.Tensor
     doc: torch.Tensor
+    cumulative_light: torch.Tensor
     chain_growth_multiplier: torch.Tensor | None = None
 
     @property
@@ -310,21 +344,16 @@ class AIEState:
             dose=self.dose.detach(),
             reaction_progress=self.reaction_progress.detach(),
             doc=self.doc.detach(),
+            cumulative_light=self.cumulative_light.detach(),
             chain_growth_multiplier=multiplier,
         )
 
     def tensors(
         self,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-    ]:
+    ) -> tuple[torch.Tensor, ...]:
         """Return every spatial dynamic-state field, including cure history."""
 
-        return self.o2, self.tempo, self.dose, self.reaction_progress, self.doc
+        return self.o2, self.tempo, self.dose, self.reaction_progress, self.doc, self.cumulative_light
 
     def reference_tensors(
         self,
@@ -475,6 +504,7 @@ class AIEModel(nn.Module):
             dose=zeros.clone(),
             reaction_progress=zeros.clone(),
             doc=zeros.clone(),
+            cumulative_light=zeros.clone(),
             chain_growth_multiplier=chain_growth_multiplier,
         )
 
@@ -517,7 +547,7 @@ class AIEModel(nn.Module):
         )
         local_intensity = normalized_intensity * self.params.intensity_mw_cm2
         energy = local_intensity * self.params.dt
-        b = self.params.b_slope * local_intensity + self.params.b_intercept
+        b = evaluate_b_law(self.params, local_intensity)
         return AIEPreparedControl(
             normalized_mask=projector_mask,
             scattered_mask=scattered_mask,
@@ -559,19 +589,15 @@ class AIEModel(nn.Module):
         )
 
         o2_next = torch.clamp(o2_diffused - control.energy, min=0.0)
-        tempo_next = torch.where(
-            o2_next <= 0,
-            torch.clamp(tempo_diffused - control.energy, min=0.0),
-            tempo_diffused,
-        )
+        energy_after_o2 = torch.clamp(control.energy - o2_diffused, min=0.0)
+        tempo_next = torch.clamp(tempo_diffused - energy_after_o2, min=0.0)
+        energy_after_inhibition = torch.clamp(energy_after_o2 - tempo_diffused, min=0.0)
         curing = (o2_next <= 0) & (tempo_next <= 0)
 
-        # Preserve the v1.1 first-curing-step bookkeeping exactly.  In a cell
-        # where both inhibitors cross zero together this subtracts both
-        # pre-step fields and can transiently make dose negative.
+        # Only residual energy after both inhibitors contributes curing dose.
         dose_next = torch.where(
             curing,
-            state.dose + control.energy - o2_diffused - tempo_diffused,
+            state.dose + energy_after_inhibition,
             state.dose,
         )
         # The reference Dose bookkeeping is retained verbatim above.  Cure
@@ -596,13 +622,16 @@ class AIEModel(nn.Module):
         doc_candidate = 1.0 - torch.exp(
             -torch.clamp(reaction_progress_next, min=0.0)
         )
-        doc_next = torch.where(curing, doc_candidate, state.doc)
+        cumulative_light = state.cumulative_light + control.energy
+        pre_cure = (self.params.pre_slope * cumulative_light).clamp(0, self.params.pre_cap)
+        doc_next = torch.where(curing, doc_candidate, pre_cure)
         return AIEState(
             o2=o2_next,
             tempo=tempo_next,
             dose=dose_next,
             reaction_progress=reaction_progress_next,
             doc=doc_next,
+            cumulative_light=cumulative_light,
             chain_growth_multiplier=state.chain_growth_multiplier,
         )
 
@@ -683,7 +712,7 @@ class AIEModel(nn.Module):
             raise ValueError(f"state fields must be 2D, got shape {reference_shape}")
         self._validate_spatial_shape(reference_shape)
         for name, field in zip(
-            ("o2", "tempo", "dose", "reaction_progress", "doc"),
+            ("o2", "tempo", "dose", "reaction_progress", "doc", "cumulative_light"),
             state.tensors(),
         ):
             if tuple(field.shape) != reference_shape:

@@ -161,7 +161,7 @@ O2inhibition=12.6124 #(26/10/01)
 #O2inhibition=33.8011 #(26/09/01)
 # 0 for no O2 inhibition
 
-Totalinhibtion=67.9730
+Totalinhibtion=O2inhibition
 #0 for no TEMPO inhibition
 #34.0231 for 1mMol TEMPO (26/10/01)
 #67.9730 for 3mMol TEMPO (26/10/01)

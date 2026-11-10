@@ -1,0 +1,895 @@
+{
+  "schema_version": 1,
+  "tracking_variable": "doc",
+  "primary_result_grid": "native",
+  "tracking_specification": {
+    "tracking_mode": "checkpoints",
+    "tracking_reference_type": "explicit_checkpoints",
+    "tracking_reference_source": "collaborator_specification",
+    "tracking_times_s": [
+      4.0
+    ],
+    "tracking_values": [
+      0.9
+    ],
+    "point_weights": [
+      1.0
+    ],
+    "point_weighting": "equal",
+    "target_tracking_stage_policy": "only_exact_configured_absolute_times",
+    "non_target_penalty_stage_policy": "all_prediction_stages",
+    "spatial_definition": "pixelwise",
+    "tracking_loss": "mse",
+    "tracking_variable": "doc",
+    "huber_delta": null,
+    "curve_reference": null
+  },
+  "reference_provenance": null,
+  "forward_model_provenance": {
+    "source": "AIE_TEMPOv1.1.py",
+    "parameters": {
+      "reference_model_source": "AIE_TEMPOv1.1.py",
+      "reference_model_path": "C:\\uSLS\\AIE-2D-David\\AIE_TEMPOv1.1.py",
+      "reference_model_sha256": "91171695f2df36527fe9816dc2e3a97e8853c2a9fdb2bf33aaaddd36b689780c",
+      "reference_structure_sha256": "560e6102bf14c470b1a9e8a5ebd87fee7252b8221e6bffa2b15b9128a6e30257",
+      "model_structure_version": 3,
+      "native_shape": [
+        300,
+        300
+      ],
+      "native_pixel_pitch_m": 7.6e-06,
+      "effective_pixel_pitch_m": 7.6e-06,
+      "projector_refinement": 1,
+      "dt": 0.05,
+      "total_simulation_time_s": 6.0,
+      "loss_sample_times_s": [
+        0.2,
+        2.0,
+        6.0
+      ],
+      "intensity_mw_cm2": 30.0,
+      "tempo_concentration_mM": 0.0,
+      "o2_diffusivity_m2_s": 4e-10,
+      "tempo_diffusivity_m2_s": 3e-10,
+      "o2_inhibition_mj_cm2": 12.6124,
+      "tempo_inhibition_mj_cm2": 0.0,
+      "total_inhibition_mj_cm2": 12.6124,
+      "scattering_blur_size_m": 5e-05,
+      "tempo_gaussian_sigma_scale": 0.8,
+      "o2_diffusion_enabled": true,
+      "tempo_diffusion_enabled": true,
+      "chain_growth_noise_std": 0.0,
+      "chain_growth_noise_enabled": false,
+      "b_slope": 0.0,
+      "b_intercept": 0.0,
+      "b_condition_label": "source comment: 0mMTEMPO (26/10/01) (R^2 = 0.999)",
+      "b_law_type": "power_law",
+      "b_coefficient": 0.1131,
+      "b_exponent": 0.6038,
+      "b_equation": "0.1131 * I**0.6038",
+      "pre_slope": 0.002,
+      "pre_cap": 0.015,
+      "precure_definition": "clip(pre_slope * cumulative_light, 0, pre_cap); inhibited branch only",
+      "reaction_progress_definition": "sum(B(I_k) * delta_curing_dose_k / I_k); excludes pre-cure",
+      "r_tracking_interpretation": "polymerization target -log(1-D*), not an inverse of pre-cure DoC",
+      "zero_intensity_convention": "authoritative optical floor retained; no additional intensity floor",
+      "minimum_normalized_intensity": 3.92156862745098e-15,
+      "division_epsilon": 1.176470588235294e-13,
+      "mask_grayscale_max": 255.0,
+      "doc_model_id": "reference_residual_energy_precure_v3",
+      "doc_model_formula": "torch.where((O2next <= 0) & (TEMPOnext <= 0), 1 - torch.exp(-(B * t).clamp(min=0)), pre_cure)",
+      "doc_history_mode": "incremental_reaction_progress_with_precure_v2",
+      "doc_history_description": "MPC-side incremental R extension; algebraically reduces to the reference curing law at constant intensity. Inhibited DoC is the separate cumulative-light pre-cure signal. Time-varying R is not separately experimentally calibrated.",
+      "doc_fit_applied_to_governing_law": false,
+      "doc_calibration_source": "DoC curve.ipynb -> doc_fit_parameters.json",
+      "doc_calibration_path": "C:\\uSLS\\AIE-2D-David\\doc_fit_parameters.json",
+      "doc_calibration_sha256": "3436b8434edb2399a1d6501bf088e036db65ea956642eaf3881f7917a2f7bd51",
+      "doc_fit_selection_status": "exact_intensity_and_tempo_match",
+      "available_doc_fit_condition_ids": [
+        "30mW_0mM",
+        "30mW_5mM"
+      ],
+      "doc_fit_calibration_id": "doc_curve_collaborator_original_v2",
+      "doc_fit_condition_id": "30mW_0mM",
+      "doc_fit_condition_label": "30 mW/cm^2, 0 mM TEMPO",
+      "doc_fit_formula_id": "collaborator_original_abc",
+      "doc_fit_formula": "1 - a * exp(minimum(b * (c - t), 0))",
+      "doc_fit_exported_at_utc": "2026-08-26T17:20:12.066073Z",
+      "doc_fit_a": 0.9590163726724414,
+      "doc_fit_b": 0.8638505234421453,
+      "doc_fit_c": 0.9187892771732862
+    },
+    "inhibition_parameter_provenance": "AIE_TEMPOv1.1.py:300: inferred from label on active B assignment (not an executable concentration): source comment: 0mMTEMPO (26/10/01) (R^2 = 0.999); AIE_TEMPOv1.1.py:160 O2inhibition=12.6124; AIE_TEMPOv1.1.py:164 Totalinhibtion=O2inhibition; AIE_TEMPOv1.1.py:172 TEMPOinhibition=max(0.0, Totalinhibtion - O2inhibition)",
+    "sha256": "91171695f2df36527fe9816dc2e3a97e8853c2a9fdb2bf33aaaddd36b689780c",
+    "selector": "30mW_0mM",
+    "resolved_source_mode": "active_authoritative",
+    "value_sources": {
+      "intensity": "active assignment",
+      "o2_inhibition": "active assignment",
+      "total_inhibition": "active assignment",
+      "tempo_inhibition": "derived from active assignments",
+      "b_law": "active expression",
+      "pre_slope": "active assignment",
+      "pre_cap": "active assignment",
+      "inhibitor_update": "active sequential residual-energy expressions",
+      "dt": "active assignment",
+      "pixel_pitch": "active assignment",
+      "o2_diffusivity": "active assignment",
+      "tempo_diffusivity": "active assignment",
+      "scattering": "active assignment"
+    },
+    "history_mode": "incremental_reaction_progress_with_precure_v2",
+    "history_description": "MPC-side incremental R extension; algebraically reduces to the reference curing law at constant intensity. Inhibited DoC is the separate cumulative-light pre-cure signal. Time-varying R is not separately experimentally calibrated.",
+    "tracking_reference_physics_match": {
+      "matched": true,
+      "tracking_reference_type": "explicit_checkpoints",
+      "tracking_reference_source": "collaborator_specification",
+      "forward_condition_id": "30mW_0mM",
+      "forward_intensity_mw_cm2": 30.0,
+      "forward_tempo_concentration_mM": 0.0,
+      "override_used": false
+    }
+  },
+  "target": {
+    "name": "Picture10.png",
+    "path": "C:\\uSLS\\AIE-2D-David\\GEO\\seg\\Picture10.png",
+    "shape": [
+      110,
+      151
+    ],
+    "target_threshold": 0.5
+  },
+  "initialization": {
+    "mode": "uniform",
+    "heuristic_only": false,
+    "initial_target_level": 0.95,
+    "initial_background_level": 0.02
+  },
+  "total_process_time_s": 4.0,
+  "final_geometry_reference": {
+    "doc": 0.9,
+    "source": "last_sparse_requirement_at_or_before_total_time"
+  },
+  "control_settings": {
+    "dt_s": 0.05,
+    "physics_steps_per_control": 10,
+    "control_dt_s": 0.5,
+    "control_steps": 8,
+    "horizon": 8,
+    "prediction_horizon_seconds": 4.0,
+    "target_weight": 1.0,
+    "outside_weight": 0.5,
+    "outside_o2_weight": 0.0,
+    "energy_weight": 0.0001,
+    "smoothness_weight": 0.01
+  },
+  "target_region_doc_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0
+    ],
+    "mean_target_doc": [
+      0.014364969916641712,
+      0.1567998081445694,
+      0.3430837392807007,
+      0.48349326848983765,
+      0.6014924049377441,
+      0.6986590623855591,
+      0.7771543860435486,
+      0.8368642330169678
+    ],
+    "min_target_doc": [
+      0.005442847963422537,
+      0.0004341006278991699,
+      2.187490463256836e-05,
+      0.0014820098876953125,
+      0.001247406005859375,
+      0.10764867067337036,
+      0.29495424032211304,
+      0.460263729095459
+    ],
+    "max_target_doc": [
+      0.014999999664723873,
+      0.3032954931259155,
+      0.5122957229614258,
+      0.6598913669586182,
+      0.7657817602157593,
+      0.8383256793022156,
+      0.8895300030708313,
+      0.9249643683433533
+    ],
+    "std_target_doc": [
+      0.0015697891358286142,
+      0.09305904805660248,
+      0.15270228683948517,
+      0.18266525864601135,
+      0.18205629289150238,
+      0.1628326177597046,
+      0.13532595336437225,
+      0.10821276158094406
+    ],
+    "lower_error": [
+      0.008922121953219175,
+      0.15636570751667023,
+      0.3430618643760681,
+      0.48201125860214233,
+      0.6002449989318848,
+      0.5910103917121887,
+      0.48220014572143555,
+      0.3766005039215088
+    ],
+    "upper_error": [
+      0.000635029748082161,
+      0.14649568498134613,
+      0.1692119836807251,
+      0.17639809846878052,
+      0.16428935527801514,
+      0.1396666169166565,
+      0.11237561702728271,
+      0.0881001353263855
+    ],
+    "mean_outside_doc": [
+      0.0012690010480582714,
+      0.0025302954018115997,
+      0.00363796204328537,
+      0.004905104637145996,
+      0.0070112026296556,
+      0.010186881758272648,
+      0.015462883748114109,
+      0.023032022640109062
+    ]
+  },
+  "target_region_reaction_progress_timeline": {
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0
+    ],
+    "requested_reaction_progress": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      2.302585092994046
+    ],
+    "mean_target_reaction_progress": [
+      0.0,
+      0.17450866103172302,
+      0.4435826539993286,
+      0.7115344405174255,
+      1.0006170272827148,
+      1.3079681396484375,
+      1.6344020366668701,
+      1.9681490659713745
+    ],
+    "min_target_reaction_progress": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.11389535665512085,
+      0.349492609500885,
+      0.6166746020317078
+    ],
+    "max_target_reaction_progress": [
+      0.0,
+      0.36139392852783203,
+      0.7180461287498474,
+      1.078490138053894,
+      1.4515019655227661,
+      1.8221713304519653,
+      2.2030110359191895,
+      2.589792251586914
+    ],
+    "std_target_reaction_progress": [
+      0.0,
+      0.11163056641817093,
+      0.21434497833251953,
+      0.30608218908309937,
+      0.37798264622688293,
+      0.4343346059322357,
+      0.4780762493610382,
+      0.5129022598266602
+    ],
+    "reaction_progress_error": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      -0.3344360270226714
+    ]
+  },
+  "target_region_o2_timeline_mj_cm2": {
+    "units": "mJ/cm^2",
+    "times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0
+    ],
+    "target_o2_mean": [
+      3.927666425704956,
+      0.12975336611270905,
+      0.02210690639913082,
+      0.009826723486185074,
+      0.0010836526053026319,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_o2_min": [
+      1.138261318206787,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_o2_max": [
+      9.626431465148926,
+      5.285041332244873,
+      1.6500415802001953,
+      1.370881199836731,
+      0.6363056898117065,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_o2_std": [
+      1.879429578781128,
+      0.48964187502861023,
+      0.1391976773738861,
+      0.07892313599586487,
+      0.021373039111495018,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "temporal_tracking": null,
+  "temporal_reaction_progress_tracking": null,
+  "sparse_tracking": {
+    "tracking_variable": "doc",
+    "times_s": [
+      4.0
+    ],
+    "requested_doc": [
+      0.9
+    ],
+    "achieved_doc": [
+      0.8368642330169678
+    ],
+    "mean_target_doc": [
+      0.8368642330169678
+    ],
+    "min_target_doc": [
+      0.460263729095459
+    ],
+    "max_target_doc": [
+      0.9249643683433533
+    ],
+    "std_target_doc": [
+      0.10821276158094406
+    ],
+    "lower_error": [
+      0.3766005039215088
+    ],
+    "upper_error": [
+      0.0881001353263855
+    ],
+    "errors": [
+      -0.06313576698303225
+    ],
+    "requested_reaction_progress": [
+      2.302585092994046
+    ],
+    "mean_target_reaction_progress": [
+      1.9681490659713745
+    ],
+    "min_target_reaction_progress": [
+      0.6166746020317078
+    ],
+    "max_target_reaction_progress": [
+      2.589792251586914
+    ],
+    "std_target_reaction_progress": [
+      0.5129022598266602
+    ],
+    "reaction_progress_error": [
+      -0.3344360270226714
+    ],
+    "reaction_progress_rmse": 0.3344360270226714,
+    "reaction_progress_mae": 0.3344360270226714,
+    "reaction_progress_max_absolute_error": 0.3344360270226714,
+    "target_o2_mean": [
+      0.0
+    ],
+    "target_o2_min": [
+      0.0
+    ],
+    "target_o2_max": [
+      0.0
+    ],
+    "target_o2_std": [
+      0.0
+    ],
+    "target_o2_units": "mJ/cm^2",
+    "rmse": 0.06313576698303225,
+    "mae": 0.06313576698303225,
+    "max_absolute_error": 0.06313576698303225,
+    "table_path": "doc_tracking_points.csv"
+  },
+  "soft_doc": {
+    "full_image_rmse": 0.059445284439987825,
+    "target_region_rmse": 0.049541781602442866,
+    "outside_region_rmse": 0.060951321164715334,
+    "full_image_mae": 0.018689229844164063
+  },
+  "geometry": {
+    "threshold": 0.5,
+    "threshold_interpretation": "Computational segmentation threshold only; not claimed as an experimentally calibrated gel-point threshold.",
+    "target_threshold": 0.5,
+    "iou": 0.9124031007751938,
+    "dice": 0.9541953790028375,
+    "precision": 0.924950884086444,
+    "recall": 0.9853495186270406,
+    "undercure_fraction": 0.014650481372959398,
+    "overcure_fraction_target_normalized": 0.07994976977814985,
+    "overcure_fraction_image": 0.011499096929560505,
+    "area_error_fraction": 0.06529928840519046,
+    "pixel_counts": {
+      "image_area": 16610,
+      "target_area": 2389,
+      "cured_area": 2545,
+      "true_positive": 2354,
+      "false_positive": 191,
+      "false_negative": 35
+    }
+  },
+  "boundary": {
+    "status": "ok",
+    "mean_symmetric_distance_px": 0.2928280981094842,
+    "mean_symmetric_distance_um": 2.2254935456320797,
+    "p95_symmetric_distance_px": 1.0,
+    "p95_symmetric_distance_um": 7.6
+  },
+  "components": {
+    "count": 1,
+    "component_mean_doc_mean": 0.8368642329171693,
+    "component_mean_doc_min": 0.8368642329171693,
+    "component_mean_doc_max": 0.8368642329171693,
+    "worst_mean_doc": 0.8368642329171693,
+    "worst_mean_doc_component_id": 1,
+    "worst_cured_fraction": 0.9853495186270406,
+    "worst_cured_fraction_component_id": 1,
+    "worst_undercure_fraction": 0.014650481372959434,
+    "worst_undercure_component_id": 1,
+    "table_path": "component_metrics.csv"
+  },
+  "holes": {
+    "count": 1,
+    "total_hole_pixels": 2020,
+    "cured_fraction": 0.05742574257425743,
+    "mean_doc": 0.07617899946108263,
+    "p95_doc": 0.530587115883827,
+    "max_doc": 0.8209816813468933,
+    "details": [
+      {
+        "hole_id": 1,
+        "area_pixels": 2020,
+        "cured_fraction": 0.05742574257425743,
+        "mean_doc": 0.07617899946108263,
+        "p95_doc": 0.530587115883827,
+        "max_doc": 0.8209816813468933
+      }
+    ]
+  },
+  "final_DoC_frobenius": 12.47685920238143,
+  "baseline_final_DoC_frobenius": 16.835561923823906,
+  "target_DoC_frobenius": 6.123564861728495,
+  "doc_frobenius_definition": {
+    "formula": "sqrt(sum((D_pred - D_des)**2))",
+    "desired_field": "D_des = reference_final_doc * (target > target_threshold)",
+    "reference_final_doc": 0.9,
+    "target_threshold": 0.5,
+    "domain": "full native image; no normalization or clipping",
+    "desired_field_path": "desired_doc_native.npy",
+    "comparison_image_path": "final_doc_comparison.png"
+  },
+  "baseline_comparison": {
+    "enabled": true,
+    "label": "unoptimized repeated target-mask baseline",
+    "baseline_metrics_path": "baseline_target_mask/metrics.json",
+    "comparison_point": {
+      "time_s": 4.0,
+      "requested_doc": 0.9,
+      "selection": "last sparse tracking point"
+    },
+    "metrics": {
+      "final_DoC_frobenius": {
+        "mpc": 12.47685920238143,
+        "baseline": 16.835561923823906
+      },
+      "target_DoC_frobenius": {
+        "mpc": 6.123564861728495,
+        "baseline": 6.32965318670341
+      },
+      "checkpoint_mean_doc": {
+        "mpc": 0.8368642330169678,
+        "baseline": 0.895664632320404
+      },
+      "checkpoint_absolute_error": {
+        "mpc": 0.06313576698303225,
+        "baseline": 0.0043353676795959695
+      },
+      "tracking_doc_rmse": {
+        "mpc": 0.06313576698303225,
+        "baseline": 0.0043353676795959695
+      },
+      "target_doc_rmse": {
+        "mpc": 0.049541781602442866,
+        "baseline": 0.1296900367678946
+      },
+      "target_doc_std": {
+        "mpc": 0.10821276158094406,
+        "baseline": 0.12942802906036377
+      },
+      "component_mean_doc_min": {
+        "mpc": 0.8368642329171693,
+        "baseline": 0.8956647115350611
+      },
+      "component_mean_doc_max": {
+        "mpc": 0.8368642329171693,
+        "baseline": 0.8956647115350611
+      },
+      "mean_outside_doc": {
+        "mpc": 0.023032022640109062,
+        "baseline": 0.028444087132811546
+      },
+      "iou": {
+        "mpc": 0.9124031007751938,
+        "baseline": 0.834941050375134
+      },
+      "dice": {
+        "mpc": 0.9541953790028375,
+        "baseline": 0.9100467289719626
+      }
+    }
+  },
+  "outside_oxygen_diagnostics": {
+    "reporting_only": true,
+    "diagnostic_values_used_by_controller": false,
+    "spatial_weight_map_definition_shared_with_controller": true,
+    "weighted_diagnostic_spatial_weight_source": "exact MPC controller weight map on the optimization grid when the loss is enabled, or the identical shared-helper map when disabled; unchanged in native mode and constant-block expanded to the native replay grid in coarse mode",
+    "weighted_diagnostic_outside_region_definition": "optimization-grid normalized target <= 0.5; constant-block expanded for native realized-state reporting",
+    "weighted_diagnostic_controller_grid_shape": [
+      110,
+      151
+    ],
+    "weighted_diagnostic_native_grid_shape": [
+      110,
+      151
+    ],
+    "weighted_diagnostic_block_expansion_factor": 1,
+    "weighted_diagnostic_optical_length_px": 1.896738394430403,
+    "weighted_diagnostic_optical_length_grid": "MPC optimization/controller grid",
+    "weighted_diagnostic_scattering_kernel_shape_px": [
+      7,
+      7
+    ],
+    "weighted_diagnostic_pixel_pitch_m": 7.6e-06,
+    "weighted_diagnostic_normalization_note": "constant-block expansion repeats every controller weight equally, so the common multiplicity cancels in the normalized weighted mean",
+    "weighted_diagnostic_field_sampling": "controller-grid outside weights applied to native realized-state fields; equivalently, to block-averaged native fields in coarse mode",
+    "grid": "native physical/application grid",
+    "O2_reference": "absolute_process_t0",
+    "target_region_definition": "normalized target > 0.5",
+    "outside_region_definition": "complement of target region",
+    "target_threshold_note": "normalized target pixels at or below the threshold, including antialiased values, are classified as outside",
+    "optical_length_px": 1.896738394430403,
+    "optical_length_grid": "native physical/application grid",
+    "optical_length_definition": "2d_radial_rms_scattering_kernel",
+    "optical_length_formula": "sqrt(sum(K_2D[y,x] * (x^2 + y^2)) / sum(K_2D))",
+    "optical_length_method": "2-D radial RMS width from the second spatial moment of the resolved native AIEModel.scattering_kernel_2d",
+    "O2_spatial_weighting": "exp(-distance/L_opt)",
+    "stabilized_exponential_weights": true,
+    "stabilized_exponential_weight_definition": "exp(-(distance - minimum outside distance)/L_opt); the common factor cancels in every normalized weighted mean",
+    "outside_o2_spatial_weight_sum": 1741.273681640625,
+    "controller_outside_o2_spatial_weight_sum": 1741.273681640625,
+    "resolved_scattering_blur_size_m": 5e-05,
+    "resolved_pixel_pitch_m": 7.6e-06,
+    "resolved_scattering_kernel_size_px": 7,
+    "resolved_scattering_kernel_shape_px": [
+      7,
+      7
+    ],
+    "boundary_band_radius_px": 2,
+    "boundary_region_definition": "outside pixels whose Euclidean center-to-target distance is at most ceil(optical_length_px), with a one-pixel discrete minimum",
+    "target_region_pixel_count": 2389,
+    "outside_region_pixel_count": 14221,
+    "boundary_region_pixel_count": 1313,
+    "projector_control_source": "actual applied native projector control u",
+    "timeline_row_semantics": "projector control and local intensity are held over the interval ending at time_s; O2 and DoC are sampled at that interval end",
+    "collection_method": "reporting-only deterministic replay after MPC optimization using the reused native model, initialized state, and realized controls",
+    "local_intensity_source": "AIEModel.prepare_control(...).local_intensity",
+    "local_intensity_units": "mW/cm^2",
+    "o2_units": "mJ/cm^2",
+    "initial_o2_source": "actual native physical state immediately after initialization at absolute process t=0; reused for MPC and baseline diagnostics",
+    "initial_boundary_o2_mean_mj_cm2": 12.612401008605957,
+    "initial_boundary_o2_min_mj_cm2": 12.61240005493164,
+    "initial_boundary_o2_max_mj_cm2": 12.61240005493164,
+    "o2_reserve_definition": "O2 / O2_0 per pixel",
+    "o2_depletion_definition": "1 - O2 / O2_0 per pixel",
+    "o2_ratio_reference_validity": "reserve/depletion ratios use pixels with finite positive absolute-t0 O2; ratio fields are null when no such pixels exist, while raw O2 and DoC diagnostics remain available",
+    "weighted_outside_o2_reserve_definition": "sum_over_positive_controller_weights(w_p * O2_p/O2_p(t=0)) / sum_over_positive_controller_weights(w_p)",
+    "weighted_outside_o2_depletion_definition": "sum_over_positive_controller_weights(w_p * (1 - O2_p/O2_p(t=0))) / sum_over_positive_controller_weights(w_p)",
+    "weighted_outside_doc_definition": "sum_over_positive_controller_weights(w_p * DoC_p) / sum_over_positive_controller_weights(w_p)",
+    "reserve_reporting_thresholds": [
+      0.75,
+      0.5,
+      0.25,
+      0.05
+    ],
+    "timeline_csv": "outside_oxygen_diagnostics.csv",
+    "comparison_plot": "outside_oxygen_diagnostics.png",
+    "baseline_timeline_csv": "baseline_target_mask/outside_oxygen_diagnostics.csv",
+    "summary": {
+      "max_commanded_u_outside": 0.9995720982551575,
+      "mean_commanded_u_boundary": 0.12085956986993551,
+      "max_local_intensity_boundary_mw_cm2": 23.360942840576172,
+      "final_boundary_o2_reserve_mean": 0.01140377577394247,
+      "minimum_boundary_o2_reserve": 0.0,
+      "final_boundary_o2_at_or_below_zero_fraction": 0.7296268343925476,
+      "final_boundary_doc_mean": 0.2076641470193863,
+      "final_boundary_doc_max": 0.8209816813468933,
+      "final_weighted_outside_o2_reserve": 0.0950918197631836,
+      "final_weighted_outside_o2_depletion": 0.9049081802368164,
+      "final_weighted_outside_doc": 0.15218845009803772
+    },
+    "weighted_timeline": {
+      "time_s": [
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+        2.5,
+        3.0,
+        3.5,
+        4.0
+      ],
+      "weighted_outside_o2_reserve": [
+        0.7800382375717163,
+        0.43408694863319397,
+        0.2820969521999359,
+        0.22178637981414795,
+        0.17445960640907288,
+        0.14353877305984497,
+        0.11790336668491364,
+        0.0950918197631836
+      ],
+      "weighted_outside_o2_depletion": [
+        0.2199617177248001,
+        0.5659130215644836,
+        0.7179030776023865,
+        0.7782135605812073,
+        0.8255403637886047,
+        0.856461226940155,
+        0.8820966482162476,
+        0.9049081802368164
+      ],
+      "weighted_outside_doc": [
+        0.004511749837547541,
+        0.00952606089413166,
+        0.01437345240265131,
+        0.021554090082645416,
+        0.03577437996864319,
+        0.05865304917097092,
+        0.09760980308055878,
+        0.15218845009803772
+      ]
+    },
+    "comparison": {
+      "label": "outside exposure / O2 diagnostics",
+      "aggregation": {
+        "commanded/local maxima": "maximum over all realized control times",
+        "mean commanded boundary": "mean over realized control times",
+        "final fields": "last realized control time",
+        "minimum reserve": "minimum pixel reserve over all realized times"
+      },
+      "metrics": {
+        "max_commanded_u_outside": {
+          "mpc": 0.9995720982551575,
+          "baseline": 0.49803921580314636
+        },
+        "mean_commanded_u_boundary": {
+          "mpc": 0.12085956986993551,
+          "baseline": 0.09488823264837265
+        },
+        "max_local_intensity_boundary_mw_cm2": {
+          "mpc": 23.360942840576172,
+          "baseline": 21.908761978149414
+        },
+        "final_boundary_o2_reserve_mean": {
+          "mpc": 0.01140377577394247,
+          "baseline": 0.03294927626848221
+        },
+        "minimum_boundary_o2_reserve": {
+          "mpc": 0.0,
+          "baseline": 0.0
+        },
+        "final_boundary_o2_at_or_below_zero_fraction": {
+          "mpc": 0.7296268343925476,
+          "baseline": 0.6283320784568787
+        },
+        "final_boundary_doc_mean": {
+          "mpc": 0.2076641470193863,
+          "baseline": 0.29929500818252563
+        },
+        "final_boundary_doc_max": {
+          "mpc": 0.8209816813468933,
+          "baseline": 0.9171215295791626
+        },
+        "final_weighted_outside_o2_reserve": {
+          "mpc": 0.0950918197631836,
+          "baseline": 0.13989070057868958
+        },
+        "final_weighted_outside_o2_depletion": {
+          "mpc": 0.9049081802368164,
+          "baseline": 0.8601092100143433
+        },
+        "final_weighted_outside_doc": {
+          "mpc": 0.15218845009803772,
+          "baseline": 0.2147666960954666
+        }
+      }
+    }
+  },
+  "outside_o2_protection": {
+    "outside_o2_weight": 0.0,
+    "O2_reference": "absolute_process_t0",
+    "outside_o2_loss_definition": "J_O2 = mean over all H predicted stages of sum_outside(w_p * q_p,k^2) / sum_outside(w_p), with q_p,k = clamp((O2_absolute_process_t0,p - O2_pred,p,k) / max(O2_absolute_process_t0,p, epsilon), 0, 1)",
+    "O2_spatial_weighting": "exp(-distance/L_opt)",
+    "outside_o2_spatial_weighting": "w_p = exp(-d_p / optical_length_px) on outside pixels; a common minimum-distance exponent is removed before evaluation because it cancels exactly in the normalized weighted mean",
+    "stabilized_exponential_weights": true,
+    "optical_length_px": 1.896738394430403,
+    "optical_length_definition": "2d_radial_rms_scattering_kernel",
+    "optical_length_formula": "sqrt(sum(K_2D[y,x] * (x^2 + y^2)) / sum(K_2D))",
+    "optical_length_method": "2-D radial RMS width from the second spatial moment of the resolved AIEModel.scattering_kernel_2d",
+    "optical_length_grid": "MPC optimization/controller grid",
+    "resolved_scattering_kernel_shape_px": [
+      7,
+      7
+    ],
+    "optimization_pixel_pitch_m": 7.6e-06,
+    "dense_over_prediction_horizon": true,
+    "target_pixels_excluded": true,
+    "process_initial_o2_source": "detached clone of the optimization-grid physical state.o2 immediately after initialization at absolute process t=0, reused unchanged for every receding MPC solve",
+    "reference_time_s": 0.0,
+    "denominator_epsilon": 1.176470588235294e-13,
+    "zero_optical_length_policy": "exact normalized optical_length_px -> 0 limit: nearest outside pixels retain equal weight",
+    "enabled": false,
+    "zero_weight_behavior": "O2 loss arithmetic and objective addition are bypassed"
+  },
+  "mpc_loss_diagnostics": {
+    "scope": "final candidate prediction horizon for each realized receding MPC solve",
+    "component_semantics": "named *_loss fields are raw horizon costs; weighted_outside_o2_loss is the additive weighted contribution; total_loss is the complete weighted objective",
+    "times_s": [
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5
+    ],
+    "time_semantics": "absolute process time at the start of each MPC solve",
+    "realized_interval_end_times_s": [
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      3.5,
+      4.0
+    ],
+    "components": [
+      {
+        "target_loss": 0.003194081597030163,
+        "outside_doc_loss": 0.002662963466718793,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.0837358832359314,
+        "smoothness_loss": 0.00269840145483613,
+        "total_loss": 0.004560920875519514
+      },
+      {
+        "target_loss": 0.0026353204157203436,
+        "outside_doc_loss": 0.003094494342803955,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.08790433406829834,
+        "smoothness_loss": 0.011281309649348259,
+        "total_loss": 0.004304171074181795
+      },
+      {
+        "target_loss": 0.0026252083480358124,
+        "outside_doc_loss": 0.003000133903697133,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.07636965811252594,
+        "smoothness_loss": 0.011881999671459198,
+        "total_loss": 0.004251732025295496
+      },
+      {
+        "target_loss": 0.002562023466452956,
+        "outside_doc_loss": 0.002610014518722892,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.06723529100418091,
+        "smoothness_loss": 0.01139192283153534,
+        "total_loss": 0.003987673204392195
+      },
+      {
+        "target_loss": 0.0025058556348085403,
+        "outside_doc_loss": 0.0025430028326809406,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.06023212522268295,
+        "smoothness_loss": 0.010400250554084778,
+        "total_loss": 0.0038873825687915087
+      },
+      {
+        "target_loss": 0.0024864915758371353,
+        "outside_doc_loss": 0.0024225737433880568,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.052145443856716156,
+        "smoothness_loss": 0.009589964523911476,
+        "total_loss": 0.0037988927215337753
+      },
+      {
+        "target_loss": 0.002469956176355481,
+        "outside_doc_loss": 0.002181546064093709,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.043168168514966965,
+        "smoothness_loss": 0.00854426994919777,
+        "total_loss": 0.003650489030405879
+      },
+      {
+        "target_loss": 0.0024543877225369215,
+        "outside_doc_loss": 0.0016827085055410862,
+        "outside_o2_loss": 0.0,
+        "weighted_outside_o2_loss": 0.0,
+        "energy_loss": 0.03245259076356888,
+        "smoothness_loss": 0.008212653920054436,
+        "total_loss": 0.0033811137545853853
+      }
+    ]
+  }
+}

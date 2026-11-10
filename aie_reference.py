@@ -25,7 +25,7 @@ REFERENCE_MODEL_PATH = REPOSITORY_DIR / "AIE_TEMPOv1.1.py"
 DOC_FIT_PATH = REPOSITORY_DIR / "doc_fit_parameters.json"
 DOC_FIT_SCHEMA_VERSION = 1
 CONTROLLER_NATIVE_SHAPE = (300, 300)
-SUPPORTED_MODEL_STRUCTURE_VERSION = 2
+SUPPORTED_MODEL_STRUCTURE_VERSION = 3
 SUPPORTED_FORWARD_CONDITIONS = ("active", "30mW_0mM", "30mW_5mM", "70mW_0mM")
 
 _ACTIVE_PHYSICS_VALUE_SOURCES = (
@@ -34,6 +34,9 @@ _ACTIVE_PHYSICS_VALUE_SOURCES = (
     ("total_inhibition", "active assignment"),
     ("tempo_inhibition", "derived from active assignments"),
     ("b_law", "active expression"),
+    ("pre_slope", "active assignment"),
+    ("pre_cap", "active assignment"),
+    ("inhibitor_update", "active sequential residual-energy expressions"),
     ("dt", "active assignment"),
     ("pixel_pitch", "active assignment"),
     ("o2_diffusivity", "active assignment"),
@@ -109,6 +112,11 @@ class ReferenceConfig:
     chain_growth_noise_enabled: bool
     b_slope: float
     b_intercept: float
+    b_law_type: str
+    b_coefficient: float
+    b_exponent: float
+    pre_slope: float
+    pre_cap: float
     b_condition_label: str
     minimum_normalized_intensity: float
     division_epsilon: float
@@ -130,6 +138,13 @@ class ReferenceConfig:
     physics_value_sources: tuple[tuple[str, str], ...] = (
         _ACTIVE_PHYSICS_VALUE_SOURCES
     )
+    tempo_concentration_source: str = "unspecified"
+
+    def __post_init__(self) -> None:
+        validate_inhibition_condition(
+            self.tempo_concentration_mM, self.o2_inhibition_mj_cm2,
+            self.total_inhibition_mj_cm2, self.tempo_concentration_source,
+        )
 
     @property
     def tempo_inhibition_mj_cm2(self) -> float:
@@ -154,6 +169,46 @@ class ReferenceStepResult:
     doc: Any
     o2_diffused: Any
     tempo_diffused: Any
+    cumulative_light: Any
+
+
+def validate_inhibition_condition(
+    concentration: float | None, o2: float, total: float, provenance: str
+) -> None:
+    """Reject inconsistent conditions without changing authoritative capacities."""
+    if not (math.isfinite(o2) and math.isfinite(total) and 0 <= o2 <= total):
+        raise ReferenceResolutionError(
+            "Total inhibition must represent O2 plus TEMPO capacities and be >= O2; "
+            f"O2={o2:g}, total={total:g} mJ/cm^2. Source: {provenance}"
+        )
+    if concentration is not None and (not math.isfinite(concentration) or concentration < 0):
+        raise ReferenceResolutionError("TEMPO concentration must be nonnegative and finite")
+    if concentration == 0.0 and total != o2:
+        raise ReferenceResolutionError(
+            "Inconsistent 0 mM TEMPO condition: "
+            f"initial O2={o2:.6g}, initial TEMPO={total-o2:.6g}, "
+            f"total inhibition={total:.6g} mJ/cm^2. Source: {provenance}. "
+            "The active TEMPO state consumes residual optical energy and gates curing; "
+            "no alternate inhibitor mechanism is defined. Collaborator source needs "
+            "reconciliation; refusing a misleading 0mM simulation. No values overridden."
+        )
+
+
+def evaluate_b_law(parameters: Any, intensity: Any) -> Any:
+    """Evaluate source-resolved B at a positive scalar or tensor intensity."""
+    if parameters.b_law_type == "power_law":
+        return parameters.b_coefficient * intensity ** parameters.b_exponent
+    if parameters.b_law_type == "affine":
+        return parameters.b_slope * intensity + parameters.b_intercept
+    raise UnsupportedReferencePhysicsError(f"unknown B law: {parameters.b_law_type}")
+
+
+def b_law_description(parameters: Any) -> str:
+    if parameters.b_law_type == "power_law":
+        return f"{parameters.b_coefficient:.12g} * I**{parameters.b_exponent:.12g}"
+    if parameters.b_law_type == "affine":
+        return f"{parameters.b_slope:.12g} * I + {parameters.b_intercept:.12g}"
+    raise UnsupportedReferencePhysicsError(f"unknown B law: {parameters.b_law_type}")
 
 
 def _sha256(data: bytes) -> str:
@@ -335,11 +390,20 @@ def _validate_doc_equation(tree: ast.Module) -> ast.Assign:
             + ast.unparse(expression.args[1])
         )
 
-    if not _same_expression(expression.args[2], _ast_expression("DoC[-1]")):
+    if not _same_expression(expression.args[2], _ast_expression("pre_cure")):
         raise UnsupportedReferencePhysicsError(
             "unsupported active DoCnext non-curing branch: "
             + ast.unparse(expression.args[2])
         )
+    _expect_expression(tree, "pre_cure", "(pre_slope * cum_light).clamp(0, pre_cap)")
+    cumulative = _assignment_nodes(tree, "cum_light")
+    if len(cumulative) != 2 or not _same_expression(
+        cumulative[1].value, _ast_expression("cum_light + energy")
+    ) or not _same_expression(
+        cumulative[0].value,
+        _ast_expression("torch.zeros((H,W)).to(torch.float32).to(device)"),
+    ):
+        raise UnsupportedReferencePhysicsError("unsupported cumulative incident-light history")
     return assignment
 
 
@@ -362,9 +426,9 @@ def _extract_clamp_min(node: ast.AST) -> float:
     return values[0]
 
 
-def _extract_linear_b(
+def _extract_b_law(
     tree: ast.Module, source_lines: list[str]
-) -> tuple[float, float, ast.AST, str, ast.Assign]:
+) -> tuple[float, float, ast.AST, str, ast.Assign, str, float, float]:
     candidates = [
         assignment
         for assignment in _assignment_nodes(tree, "B")
@@ -381,9 +445,25 @@ def _extract_linear_b(
         )
     assignment = candidates[0]
     expression = assignment.value
+    line = source_lines[assignment.lineno - 1]
+    comment = line.partition("#")[2].strip()
+    label = f"source comment: {comment}" if comment else "unlabeled active B relation"
+    if (
+        isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Mult)
+        and isinstance(expression.left, ast.Constant)
+        and isinstance(expression.right, ast.BinOp)
+        and isinstance(expression.right.op, ast.Pow)
+        and isinstance(expression.right.right, ast.Constant)
+    ):
+        coefficient = _finite_float(expression.left.value, "B coefficient")
+        exponent = _finite_float(expression.right.right.value, "B exponent")
+        if coefficient <= 0 or exponent <= 0:
+            raise UnsupportedReferencePhysicsError("B power-law parameters must be positive")
+        return (0.0, 0.0, expression.right.left, label, assignment,
+                "power_law", coefficient, exponent)
     if not (isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Add)):
         raise UnsupportedReferencePhysicsError(
-            "active B relation is no longer a supported affine expression"
+            "active B relation is neither a supported affine nor power-law expression"
         )
     product, intercept_node = expression.left, expression.right
     if not (
@@ -400,7 +480,7 @@ def _extract_linear_b(
     line = source_lines[assignment.lineno - 1]
     comment = line.partition("#")[2].strip()
     label = f"source comment: {comment}" if comment else "unlabeled active B relation"
-    return slope, intercept, product.right, label, assignment
+    return slope, intercept, product.right, label, assignment, "affine", 0.0, 1.0
 
 
 def _extract_tempo_sigma_scale(tree: ast.Module) -> float:
@@ -434,7 +514,7 @@ def _extract_tempo_sigma_scale(tree: ast.Module) -> float:
 def _validate_equations(
     tree: ast.Module, source_lines: list[str]
 ) -> dict[str, Any]:
-    slope, intercept, local_intensity, b_label, b_assignment = _extract_linear_b(
+    slope, intercept, local_intensity, b_label, b_assignment, law_type, coefficient, exponent = _extract_b_law(
         tree, source_lines
     )
     if not (
@@ -455,13 +535,16 @@ def _validate_equations(
     if grayscale_max <= 0:
         raise ReferenceResolutionError("projector grayscale scale must be positive")
     grayscale_clamp_min = _extract_clamp_min(local_intensity)
+    if not _same_expression(_active_assignment(tree, "local_I").value, local_intensity):
+        raise UnsupportedReferencePhysicsError("local_I differs from the B-law optical intensity")
     energy = _active_assignment(tree, "energy")
     if not (
         isinstance(energy.value, ast.BinOp)
         and isinstance(energy.value.op, ast.Mult)
         and isinstance(energy.value.right, ast.Name)
         and energy.value.right.id == "dt"
-        and _same_expression(energy.value.left, local_intensity)
+        and (_same_expression(energy.value.left, local_intensity)
+             or _same_expression(energy.value.left, _ast_expression("local_I")))
     ):
         raise UnsupportedReferencePhysicsError(
             "Energy must equal active normalized local intensity * intensity * dt"
@@ -470,13 +553,15 @@ def _validate_equations(
     _expect_expression(
         tree,
         "TEMPOnext",
-        "torch.where(O2next <= 0, torch.clamp(TEMPO_diffused - energy, min=0), TEMPO_diffused)",
+        "torch.clamp(TEMPO_diffused - energy_after_o2, min=0)",
     )
     _expect_expression(
         tree,
         "Dosenext",
-        "torch.where((O2next <= 0) & (TEMPOnext <= 0), Dose[-1] + energy - O2_diffused - TEMPO_diffused, Dose[-1])",
+        "torch.where((O2next <= 0) & (TEMPOnext <= 0), Dose[-1] + energy_after_inhibition, Dose[-1])",
     )
+    _expect_expression(tree, "energy_after_o2", "torch.clamp(energy - O2_diffused, min=0)")
+    _expect_expression(tree, "energy_after_inhibition", "torch.clamp(energy_after_o2 - TEMPO_diffused, min=0)")
     exposure_time = _active_assignment(tree, "t")
     if not (
         isinstance(exposure_time.value, ast.BinOp)
@@ -593,6 +678,13 @@ def _validate_equations(
             "(1 + chainGrowth_noise_std * torch.randn(H, W, device=device)).clamp(min=0.001)",
         )
     selected = [
+        _assignment_nodes(tree, "cum_light")[0].value,
+        _assignment_nodes(tree, "cum_light")[1].value,
+        _active_assignment(tree, "energy_after_o2").value,
+        _active_assignment(tree, "energy_after_inhibition").value,
+        _active_assignment(tree, "pre_cure").value,
+        _active_assignment(tree, "pre_slope").value,
+        _active_assignment(tree, "pre_cap").value,
         energy.value,
         b_assignment.value,
         o2_assignment.value,
@@ -613,6 +705,9 @@ def _validate_equations(
     ).encode("utf-8")
     return {
         "b_slope": slope,
+        "b_law_type": law_type,
+        "b_coefficient": coefficient,
+        "b_exponent": exponent,
         "b_intercept": intercept,
         "b_condition_label": b_label,
         "local_intensity": local_intensity,
@@ -864,12 +959,22 @@ def load_reference_config() -> ReferenceConfig:
         ),
         None,
     )
+    b_condition_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mM\s*TEMPO",
+                                  equations["b_condition_label"], re.IGNORECASE)
+    b_condition = float(b_condition_match.group(1)) if b_condition_match else None
+    concentration_source = "active executable concentration assignment"
     if tempo_condition is None:
-        normalized_b_label = equations["b_condition_label"].lower().replace(" ", "")
-        if "0mmtempo" in normalized_b_label:
-            tempo_condition = 0.0
-        elif "5mmtempo" in normalized_b_label:
-            tempo_condition = 5.0
+        tempo_condition = b_condition
+        concentration_source = (
+            f"{REFERENCE_MODEL_PATH.name}:{_active_assignment(tree, 'B').lineno}: "
+            "inferred from label on active B assignment (not an executable concentration): "
+            + equations["b_condition_label"]
+        )
+    elif b_condition is not None and tempo_condition != b_condition:
+        raise ReferenceResolutionError(
+            "Active concentration assignment conflicts with active B-condition label; "
+            "collaborator source needs reconciliation"
+        )
     calibration_sha, calibration_catalog = _load_doc_fit_catalog()
     doc_fit, selection_status = _select_doc_fit(
         calibration_catalog, intensity, tempo_condition
@@ -878,6 +983,15 @@ def load_reference_config() -> ReferenceConfig:
     total_inhibition = _required_numeric(values, "Totalinhibtion")
     tempo_inhibition = _required_numeric(values, "TEMPOinhibition")
     expected_tempo_inhibition = max(0.0, total_inhibition - o2_inhibition)
+    inhibition_source = "; ".join(
+        f"{REFERENCE_MODEL_PATH.name}:{_active_assignment(tree, name).lineno} "
+        f"{name}={ast.unparse(_active_assignment(tree, name).value)}"
+        for name in ("O2inhibition", "Totalinhibtion", "TEMPOinhibition")
+    )
+    validate_inhibition_condition(
+        tempo_condition, o2_inhibition, total_inhibition,
+        concentration_source + "; " + inhibition_source,
+    )
     if not math.isclose(
         tempo_inhibition,
         expected_tempo_inhibition,
@@ -903,6 +1017,7 @@ def load_reference_config() -> ReferenceConfig:
         loss_sample_times_s=tuple(step * dt for step in loss_steps),
         intensity_mw_cm2=intensity,
         tempo_concentration_mM=tempo_condition,
+        tempo_concentration_source=concentration_source + "; " + inhibition_source,
         o2_diffusivity_m2_s=_required_numeric(values, "O2_dfsvty"),
         tempo_diffusivity_m2_s=_required_numeric(values, "TEMPO_dfsvty"),
         o2_inhibition_mj_cm2=o2_inhibition,
@@ -918,6 +1033,11 @@ def load_reference_config() -> ReferenceConfig:
         ),
         chain_growth_noise_enabled=equations["chain_growth_noise_enabled"],
         b_slope=equations["b_slope"],
+        b_law_type=equations["b_law_type"],
+        b_coefficient=equations["b_coefficient"],
+        b_exponent=equations["b_exponent"],
+        pre_slope=_required_numeric(values, "pre_slope"),
+        pre_cap=_required_numeric(values, "pre_cap"),
         b_intercept=equations["b_intercept"],
         b_condition_label=equations["b_condition_label"],
         minimum_normalized_intensity=(
@@ -938,7 +1058,7 @@ def load_reference_config() -> ReferenceConfig:
         scattering_sigma_formula=ast.unparse(
             _active_assignment(tree, "ls_sigma").value
         ),
-        doc_model_id="reference_intensity_dependent_B_v2",
+        doc_model_id="reference_residual_energy_precure_v3",
         doc_model_formula=equations["doc_formula"],
         doc_fit_applied_to_governing_law=False,
         doc_calibration_source="DoC curve.ipynb -> doc_fit_parameters.json",
@@ -1014,9 +1134,9 @@ def load_reference_config_for_condition(reference_id: str) -> ReferenceConfig:
     """Resolve a validated condition configuration through the read-only adapter.
 
     Executable assignments are authoritative whenever the named selector exactly
-    describes the active source.  Labelled historical alternatives are considered
-    only for non-active conditions; free-form comments never override matching
-    executable assignments.  The source is parsed but never edited or executed.
+    describes the active source. Non-active conditions are rejected: commented
+    fits cannot establish the active residual-energy/pre-cure dynamics.
+    The source is parsed but never edited or executed.
     """
 
     if reference_id not in SUPPORTED_FORWARD_CONDITIONS:
@@ -1032,7 +1152,6 @@ def load_reference_config_for_condition(reference_id: str) -> ReferenceConfig:
             physics_resolution_mode="active_authoritative",
             physics_value_sources=_ACTIVE_PHYSICS_VALUE_SOURCES,
         )
-    source = REFERENCE_MODEL_PATH.read_text(encoding="utf-8")
     intensity_mw_cm2, tempo_mM = {
         "30mW_0mM": (30.0, 0.0),
         "30mW_5mM": (30.0, 5.0),
@@ -1064,68 +1183,9 @@ def load_reference_config_for_condition(reference_id: str) -> ReferenceConfig:
             "override the active assignments"
         )
 
-    b_slope, b_intercept = _unique_labeled_b_relation(source, tempo_mM)
-    if b_slope <= 0.0 or b_intercept < 0.0:
-        raise ReferenceResolutionError(
-            f"{tempo_mM:g} mM B/intensity coefficients must be physically nonnegative"
-        )
-
-    if math.isclose(tempo_mM, 0.0, rel_tol=0.0, abs_tol=1e-12):
-        (o2_inhibition,) = _unique_commented_condition_value(
-            source,
-            r"^\s*#\s*([-+0-9.eE]+)\s+for\s+0\s*mmol\s+TEMPO\s+"
-            r"concentration\s+O2\s+only\s*$",
-            "0 mM O2-only inhibition",
-        )
-        total_inhibition = o2_inhibition
-        field_sources = (
-            ("intensity", "explicit named non-active condition"),
-            ("o2_inhibition", "labelled historical 0 mM comment"),
-            ("total_inhibition", "reconstructed O2-only condition"),
-            ("tempo_inhibition", "derived from reconstructed condition"),
-            ("b_law", "labelled historical expression"),
-        )
-    else:
-        o2_inhibition = base.o2_inhibition_mj_cm2
-        (total_inhibition,) = _unique_commented_condition_value(
-            source,
-            r"^\s*#\s*([-+0-9.eE]+)\s+for\s+5\s*mmol\s+TEMPO\s+concentration\s*$",
-            "5 mM total inhibition",
-        )
-        if total_inhibition <= o2_inhibition:
-            raise ReferenceResolutionError(
-                "5 mM total inhibition must exceed the active O2 inhibition"
-            )
-        field_sources = (
-            ("intensity", "explicit named non-active condition"),
-            ("o2_inhibition", "active assignment"),
-            ("total_inhibition", "labelled historical 5 mM comment"),
-            ("tempo_inhibition", "derived from reconstructed condition"),
-            ("b_law", "labelled historical expression"),
-        )
-
-    _, calibration_catalog = _load_doc_fit_catalog()
-    doc_fit, selection_status = _select_doc_fit(
-        calibration_catalog, intensity_mw_cm2, tempo_mM
-    )
-    return replace(
-        base,
-        intensity_mw_cm2=intensity_mw_cm2,
-        tempo_concentration_mM=tempo_mM,
-        o2_inhibition_mj_cm2=o2_inhibition,
-        total_inhibition_mj_cm2=total_inhibition,
-        b_slope=b_slope,
-        b_intercept=b_intercept,
-        b_condition_label=(
-            f"{tempo_mM:g}mMTEMPO (validated labelled relation in "
-            "AIE_TEMPOv1.1.py)"
-        ),
-        division_epsilon=base.minimum_normalized_intensity * intensity_mw_cm2,
-        doc_fit_selection_status=selection_status,
-        doc_fit=doc_fit,
-        physics_selector_id=reference_id,
-        physics_resolution_mode="reconstructed_labelled_alternative",
-        physics_value_sources=field_sources,
+    raise ReferenceResolutionError(
+        "Requested condition is not active; historical commented B fits cannot "
+        "establish residual-energy/pre-cure physics. Select the active condition."
     )
 
 
@@ -1149,6 +1209,7 @@ def reference_step_from_scattered_torch(
     tempo: Any,
     dose: Any,
     doc: Any,
+    cumulative_light: Any,
     scattered_normalized_mask: Any,
     o2_kernel_2d: Any,
     tempo_kernel_2d: Any,
@@ -1164,7 +1225,13 @@ def reference_step_from_scattered_torch(
         reference.minimum_normalized_intensity
     ) * reference.intensity_mw_cm2
     energy = local_intensity * reference.dt
-    b = reference.b_slope * local_intensity + reference.b_intercept
+    # Independent expression evaluation, intentionally not the model helper.
+    if reference.b_law_type == "power_law":
+        b = reference.b_coefficient * local_intensity ** reference.b_exponent
+    elif reference.b_law_type == "affine":
+        b = reference.b_slope * local_intensity + reference.b_intercept
+    else:
+        raise UnsupportedReferencePhysicsError("unknown reference B law")
     if chain_growth_multiplier is not None:
         b = b * chain_growth_multiplier
     elif reference.chain_growth_noise_std > 0:
@@ -1182,22 +1249,22 @@ def reference_step_from_scattered_torch(
         else tempo
     )
     o2_next = torch.clamp(o2_diffused - energy, min=0.0)
-    tempo_next = torch.where(
-        o2_next <= 0,
-        torch.clamp(tempo_diffused - energy, min=0.0),
-        tempo_diffused,
-    )
+    energy_after_o2 = torch.clamp(energy - o2_diffused, min=0.0)
+    tempo_next = torch.clamp(tempo_diffused - energy_after_o2, min=0.0)
+    energy_after_inhibition = torch.clamp(energy_after_o2 - tempo_diffused, min=0.0)
     curing = (o2_next <= 0) & (tempo_next <= 0)
     dose_next = torch.where(
         curing,
-        dose + energy - o2_diffused - tempo_diffused,
+        dose + energy_after_inhibition,
         dose,
     )
     exposure_time = dose_next / local_intensity.clamp_min(
         reference.division_epsilon
     )
     doc_candidate = 1.0 - torch.exp(-torch.clamp(b * exposure_time, min=0.0))
-    doc_next = torch.where(curing, doc_candidate, doc)
+    cumulative_light = cumulative_light + energy
+    pre_cure = (reference.pre_slope * cumulative_light).clamp(0, reference.pre_cap)
+    doc_next = torch.where(curing, doc_candidate, pre_cure)
     return ReferenceStepResult(
         o2=o2_next,
         tempo=tempo_next,
@@ -1205,6 +1272,7 @@ def reference_step_from_scattered_torch(
         doc=doc_next,
         o2_diffused=o2_diffused,
         tempo_diffused=tempo_diffused,
+        cumulative_light=cumulative_light,
     )
 
 
@@ -1214,6 +1282,7 @@ def reference_step_torch(
     tempo: Any,
     dose: Any,
     doc: Any,
+    cumulative_light: Any,
     normalized_mask: Any,
     scattering_kernel_2d: Any,
     o2_kernel_2d: Any,
@@ -1229,6 +1298,7 @@ def reference_step_torch(
         tempo=tempo,
         dose=dose,
         doc=doc,
+        cumulative_light=cumulative_light,
         scattered_normalized_mask=scattered,
         o2_kernel_2d=o2_kernel_2d,
         tempo_kernel_2d=tempo_kernel_2d,

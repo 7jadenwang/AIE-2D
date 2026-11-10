@@ -14,6 +14,7 @@ import torch
 
 from aie_fine_grid import initialize_projector_mask
 from aie_model import AIEModel, AIEParameters
+from aie_reference import evaluate_b_law
 
 
 DEFAULT_PHYSICS_INIT_ITERATIONS = 100
@@ -58,11 +59,13 @@ def constant_intensity_checkpoint_doc(
     intensity_mw_cm2: float,
     checkpoint_time_s: float,
 ) -> float:
-    """Evaluate the documented O2-only constant-local-intensity heuristic.
+    """Evaluate the O2-only polymerization branch at constant local intensity.
 
     This scalar approximation is deliberately separate from the authoritative
-    spatial forward model.  The active affine B/intensity coefficients and O2
+    spatial forward model.  The active B/intensity law and O2
     inhibition are read from ``params``; no collaborator values are duplicated.
+    Pre-cure is excluded from this monotone heuristic; its inverse only accepts
+    requested DoC above the source pre-cure cap.
     """
 
     intensity = float(intensity_mw_cm2)
@@ -83,7 +86,7 @@ def constant_intensity_checkpoint_doc(
     )
     if curing_duration_s <= 0.0:
         return 0.0
-    b_value = params.b_slope * intensity + params.b_intercept
+    b_value = evaluate_b_law(params, intensity)
     exponent = b_value * curing_duration_s
     if not math.isfinite(exponent) or exponent < 0.0:
         raise PhysicsAwareInitializationError(
@@ -131,7 +134,13 @@ def solve_checkpoint_nominal_intensity(
             "physics-aware checkpoint initialization requires zero active "
             "chain-growth noise"
         )
-    if (
+    if params.b_law_type == "power_law":
+        if not (math.isfinite(params.b_coefficient) and params.b_coefficient > 0
+                and math.isfinite(params.b_exponent) and params.b_exponent > 0):
+            raise PhysicsAwareInitializationError("power-law parameters must be positive and finite")
+    elif params.b_law_type != "affine":
+        raise PhysicsAwareInitializationError("unsupported B law for initialization")
+    elif (
         not math.isfinite(params.b_slope)
         or not math.isfinite(params.b_intercept)
         or params.b_slope < 0.0
@@ -145,6 +154,11 @@ def solve_checkpoint_nominal_intensity(
     if not isinstance(max_iterations, int) or max_iterations < 1:
         raise PhysicsAwareInitializationError(
             "nominal-intensity bisection iterations must be a positive integer"
+        )
+    if 0 < checkpoint_doc <= params.pre_cap:
+        raise PhysicsAwareInitializationError(
+            "physics-aware initialization cannot invert an ambiguous pre-cure DoC target; "
+            "use uniform initialization or a target above pre_cap"
         )
 
     maximum_doc = constant_intensity_checkpoint_doc(

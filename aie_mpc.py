@@ -483,6 +483,13 @@ class DifferentiableMPC:
                         error = target_mean - stage_reference[stage_index]
                         stage_cost = self._tracking_loss(error)
                 else:
+                    if bool(((stage_reference[stage_index] > 0)
+                             & (stage_reference[stage_index] <= self.model.params.pre_cap)).any()):
+                        raise ValueError(
+                            "R tracking cannot infer polymerization progress from a DoC "
+                            "target within the pre-cure range; use DoC tracking or a "
+                            "polymerization target above pre_cap."
+                        )
                     # Reaction-progress tracking removes the extra (1 - DoC)
                     # saturation factor from the target-loss gradient near high
                     # DoC. It does not cure the separate zero-gradient inhibited

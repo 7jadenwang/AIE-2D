@@ -122,13 +122,20 @@ def assess_reference_physics_match(
             "tempo_diffusivity_m2_s",
             "b_slope",
             "b_intercept",
+            "b_law_type",
+            "b_coefficient",
+            "b_exponent",
+            "pre_slope",
+            "pre_cap",
             "scattering_blur_size_m",
             "dt",
         )
         for field_name in compared_fields:
             actual_value = getattr(params, field_name)
             expected_value = getattr(expected, field_name)
-            if actual_value is None or expected_value is None:
+            if isinstance(actual_value, str) or isinstance(expected_value, str):
+                equal = actual_value == expected_value
+            elif actual_value is None or expected_value is None:
                 equal = actual_value is expected_value
             else:
                 equal = math.isclose(
@@ -1488,6 +1495,7 @@ def run_unoptimized_target_mask_baseline(
         "forward_model_provenance": {
             "physics_condition": physics_condition,
             "parameters": model.params.provenance_metadata(),
+            "inhibition_parameter_provenance": authoritative_reference.tempo_concentration_source,
             "reference_config": authoritative_reference.to_metadata(),
             "history_mode": DOC_HISTORY_MODE,
             "history_description": DOC_HISTORY_DESCRIPTION,
@@ -2782,6 +2790,8 @@ def _print_parameter_provenance(
     print(f"Reference SHA256: {params.reference_model_sha256}")
     print(f"Reference structure SHA256: {params.reference_structure_sha256}")
     print(f"resolved source mode: {reference.physics_resolution_mode}")
+    print(f"selected condition: {reference.physics_selector_id}; TEMPO concentration={reference.tempo_concentration_mM} mM")
+    print(f"inhibition parameter provenance: {reference.tempo_concentration_source}")
     print(f"DoC calibration: {params.doc_calibration_source}")
     print(f"DoC calibration SHA256: {params.doc_calibration_sha256}")
     print(
@@ -2793,9 +2803,9 @@ def _print_parameter_provenance(
     print(f"intensity: {params.intensity_mw_cm2:.6g} mW/cm^2")
     print(f"O2 diffusivity: {params.o2_diffusivity_m2_s:.6g} m^2/s")
     print(f"TEMPO diffusivity: {params.tempo_diffusivity_m2_s:.6g} m^2/s")
-    print(f"O2 inhibition: {params.o2_inhibition_mj_cm2:.6g} mJ/cm^2")
+    print(f"initial O2 inhibition: {params.o2_inhibition_mj_cm2:.6g} mJ/cm^2")
     print(f"total inhibition: {params.total_inhibition_mj_cm2:.6g} mJ/cm^2")
-    print(f"TEMPO inhibition: {params.tempo_inhibition_mj_cm2:.6g} mJ/cm^2")
+    print(f"initial TEMPO inhibition: {params.tempo_inhibition_mj_cm2:.6g} mJ/cm^2")
     print(f"scattering physical size: {params.scattering_blur_size_m * 1e6:.6g} um")
     print(
         f"O2 diffusion: {'active' if params.o2_diffusion_enabled else 'bypassed'}"
@@ -2808,9 +2818,11 @@ def _print_parameter_provenance(
     print(f"DoC history mode: {DOC_HISTORY_MODE}")
     print(f"DoC history status: {DOC_HISTORY_DESCRIPTION}")
     print(
-        f"active B: {params.b_slope:.12g} * local_intensity + "
-        f"{params.b_intercept:.12g} ({params.b_condition_label})"
+        f"active B(I): {aie_reference.b_law_description(params)} "
+        f"[{params.b_law_type}] ({params.b_condition_label})"
     )
+    print(f"pre-cure: clip({params.pre_slope:.12g} * cumulative_light, 0, {params.pre_cap:.12g}); inhibited branch only")
+    print("R excludes pre-cure; R targets denote polymerization progress, not total DoC inversion.")
     value_sources = dict(reference.physics_value_sources)
     print(
         "physics value sources: "
@@ -3129,7 +3141,7 @@ def run_demo(args: argparse.Namespace) -> None:
                 "method": "bounded_monotone_bisection",
                 "iterations": physics_initialization.nominal.bisection_iterations,
                 "model": "O2-only constant-local-intensity approximation",
-                "b_law_source": "active AIEModel.params affine B/intensity law",
+                "b_law_source": "active AIEModel.params source-resolved B/intensity law",
             },
             "optical_initializer": {
                 "method": "Adam on sigmoid-bounded projector logits",
@@ -3570,7 +3582,7 @@ def run_demo(args: argparse.Namespace) -> None:
     save_gif_from_frames(native_doc_frame_paths, native_gif_path)
 
     for name, field in zip(
-        ("o2", "tempo", "dose", "reaction_progress", "doc"),
+        ("o2", "tempo", "dose", "reaction_progress", "doc", "cumulative_light"),
         native_state.tensors(),
     ):
         if tuple(field.shape) != config.native_shape:
@@ -4154,6 +4166,8 @@ def run_demo(args: argparse.Namespace) -> None:
         ),
         "forward_model_provenance": {
             "source": native_params.reference_model_source,
+            "parameters": native_params.provenance_metadata(),
+            "inhibition_parameter_provenance": reference.tempo_concentration_source,
             "sha256": native_params.reference_model_sha256,
             "selector": reference.physics_selector_id,
             "resolved_source_mode": reference.physics_resolution_mode,
@@ -4528,6 +4542,10 @@ def run_demo(args: argparse.Namespace) -> None:
         .cpu()
         .numpy(),
         "final_doc_native": native_state.doc.detach().cpu().numpy(),
+        "final_cumulative_light_native": native_state.cumulative_light.detach().cpu().numpy(),
+        "final_precure_signal_native": (
+            native_params.pre_slope * native_state.cumulative_light
+        ).clamp(0, native_params.pre_cap).detach().cpu().numpy(),
         "loss_histories": np.asarray(optimization_histories),
     }
     if physics_initialization is not None:
@@ -4763,6 +4781,11 @@ def _reference_architecture_test(device: torch.device) -> dict[str, object]:
         "chain_growth_noise_enabled": "chain_growth_noise_enabled",
         "b_slope": "b_slope",
         "b_intercept": "b_intercept",
+        "b_law_type": "b_law_type",
+        "b_coefficient": "b_coefficient",
+        "b_exponent": "b_exponent",
+        "pre_slope": "pre_slope",
+        "pre_cap": "pre_cap",
         "b_condition_label": "b_condition_label",
         "minimum_normalized_intensity": "minimum_normalized_intensity",
         "division_epsilon": "division_epsilon",
@@ -4998,6 +5021,7 @@ def _legacy_reference_step(
         tempo=state.tempo,
         dose=state.dose,
         doc=state.doc,
+        cumulative_light=state.cumulative_light,
         normalized_mask=normalized_mask,
         scattering_kernel_2d=model.scattering_kernel_2d,
         o2_kernel_2d=model.o2_kernel_2d,
@@ -5011,6 +5035,7 @@ def _legacy_reference_step(
         dose=result.dose,
         reaction_progress=state.reaction_progress,
         doc=result.doc,
+        cumulative_light=result.cumulative_light,
         chain_growth_multiplier=state.chain_growth_multiplier,
     )
 
@@ -5045,6 +5070,7 @@ def _static_mask_equivalence_test(device: torch.device) -> float:
         dose=initial_dose,
         reaction_progress=initial_progress,
         doc=1.0 - torch.exp(-torch.clamp(initial_progress, min=0.0)),
+        cumulative_light=initialized.cumulative_light,
         chain_growth_multiplier=initialized.chain_growth_multiplier,
     )
     refactored, reference = initial, initial
@@ -5148,7 +5174,7 @@ def _physics_synchronization_test(device: torch.device) -> dict[str, object]:
     )
     torch.testing.assert_close(
         prepared.b,
-        reference.b_slope * prepared.local_intensity + reference.b_intercept,
+        aie_reference.evaluate_b_law(reference, prepared.local_intensity),
         rtol=1e-6,
         atol=1e-7,
     )
@@ -5181,6 +5207,7 @@ def _physics_synchronization_test(device: torch.device) -> dict[str, object]:
         "scattering_kernel_size": model.scattering_kernel_size,
         "b_slope": reference.b_slope,
         "b_intercept": reference.b_intercept,
+        "b_equation": aie_reference.b_law_description(reference),
     }
 
 
@@ -5645,44 +5672,20 @@ def _tracking_configuration_matrix_test(device: torch.device) -> dict[str, objec
 
 
 def _reference_physics_condition_test() -> dict[str, object]:
-    """Verify both condition selectors and rejection of an unselected mixture."""
-
-    zero_reference = load_doc_reference("30mW_0mM")
-    five_reference = load_doc_reference("30mW_5mM")
-    zero_params = AIEParameters.from_reference(
-        load_reference_config_for_condition("30mW_0mM")
-    )
-    five_params = AIEParameters.from_reference(
-        load_reference_config_for_condition("30mW_5mM")
-    )
-    zero_match = assess_reference_physics_match(zero_reference, zero_params)
-    five_match = assess_reference_physics_match(five_reference, five_params)
-    if not zero_match["matched"] or not five_match["matched"]:
-        raise AssertionError(
-            f"validated condition selector was rejected: zero={zero_match}, "
-            f"five={five_match}"
-        )
-    if not math.isclose(
-        five_params.total_inhibition_mj_cm2, 119.7295, rel_tol=0.0, abs_tol=1e-12
-    ):
-        raise AssertionError("5 mM total inhibition was not resolved from source")
-    if not math.isclose(five_params.b_slope, 0.0069, abs_tol=1e-12) or not math.isclose(
-        five_params.b_intercept, 0.3815, abs_tol=1e-12
-    ):
-        raise AssertionError("5 mM B/intensity relation was not resolved from source")
-    unsafe_mix = assess_reference_physics_match(
-        five_reference, AIEParameters.from_reference()
-    )
-    if unsafe_mix["matched"]:
-        raise AssertionError("unselected 0 mM physics was accepted for the 5 mM reference")
-    return {
-        "five_total_inhibition": five_params.total_inhibition_mj_cm2,
-        "five_tempo_inhibition": five_params.tempo_inhibition_mj_cm2,
-        "five_b_slope": five_params.b_slope,
-        "five_b_intercept": five_params.b_intercept,
-        "unsafe_mix_missing": unsafe_mix["missing_for_physical_match"],
-    }
-
+    """Reject non-active conditions rather than reconstruct commented physics."""
+    active = load_reference_config()
+    rejected = []
+    for selector in ("30mW_0mM", "30mW_5mM", "70mW_0mM"):
+        try:
+            resolved = load_reference_config_for_condition(selector)
+        except aie_reference.ReferenceResolutionError:
+            rejected.append(selector)
+        else:
+            if resolved.b_law_type != active.b_law_type:
+                raise AssertionError("condition changed the active B law")
+    if not rejected:
+        raise AssertionError("non-active conditions were not rejected")
+    return {"rejected_conditions": rejected}
 
 def _control_timing_test() -> tuple[int, float]:
     steps, total = resolve_control_timing(
@@ -6058,12 +6061,7 @@ def run_smoke_tests() -> None:
         f"legacy_sha256={doc_reference_results['legacy_sha256']}"
     )
     condition_physics = _reference_physics_condition_test()
-    print(
-        "[pass] 30mW_0mM and 30mW_5mM forward-physics selectors; "
-        f"5mM total_inhibition={condition_physics['five_total_inhibition']:.6g}, "
-        f"B={condition_physics['five_b_slope']:.6g}*I+"
-        f"{condition_physics['five_b_intercept']:.6g}; unsafe mix guarded"
-    )
+    print(f"[pass] non-active conditions rejected: {condition_physics}" )
     timing_steps, timing_total = _control_timing_test()
     print(
         f"[pass] total-time conversion {timing_total:.1f}s -> "
@@ -6082,7 +6080,7 @@ def run_smoke_tests() -> None:
         f"[pass] kernels O2={physics['o2_kernel_size']} "
         f"TEMPO={physics['tempo_kernel_size']} "
         f"scattering={physics['scattering_kernel_size']}; "
-        f"B={physics['b_slope']:.12g}*I+{physics['b_intercept']:.12g}"
+        f"B={physics['b_equation']}"
     )
     equivalence_error = _static_mask_equivalence_test(device)
     print(f"[pass] static-mask equivalence max_abs_error={equivalence_error:.3e}")

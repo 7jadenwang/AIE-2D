@@ -80,6 +80,7 @@ def _clone_state(state: AIEState) -> AIEState:
         dose=state.dose.detach().clone(),
         reaction_progress=state.reaction_progress.detach().clone(),
         doc=state.doc.detach().clone(),
+        cumulative_light=state.cumulative_light.detach().clone(),
         chain_growth_multiplier=multiplier,
     )
 
@@ -92,7 +93,7 @@ def _validate_state(state: AIEState, label: str) -> None:
     """Fail clearly if the diagnostic encounters invalid model output."""
 
     for name, field in zip(
-        ("O2", "TEMPO", "Dose", "reaction progress", "DoC"),
+        ("O2", "TEMPO", "Dose", "reaction progress", "DoC", "cumulative light"),
         state.tensors(),
     ):
         if not bool(torch.isfinite(field).all()):
@@ -405,7 +406,9 @@ def main() -> None:
     print(f"DoC history mode: {DOC_HISTORY_MODE}")
     print(
         f"reference intensity={reference.intensity_mw_cm2:.9g} mW/cm^2; "
-        f"B(I)={reference.b_slope:.9g}*I+{reference.b_intercept:.9g}"
+        f"B law={reference.b_law_type}; coefficient={reference.b_coefficient:.9g}; "
+        f"exponent={reference.b_exponent:.9g}; affine slope/intercept="
+        f"{reference.b_slope:.9g}/{reference.b_intercept:.9g}"
     )
     print(
         f"O2 inhibition={reference.o2_inhibition_mj_cm2:.9g} mJ/cm^2; "

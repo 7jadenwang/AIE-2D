@@ -23,6 +23,8 @@ def _o2_only_parameters() -> SimpleNamespace:
         chain_growth_noise_std=0.0,
         b_slope=0.0,
         b_intercept=1.0,
+        b_law_type="affine",
+        pre_cap=0.0,
         projector_refinement=1,
     )
 
