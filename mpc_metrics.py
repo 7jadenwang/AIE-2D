@@ -337,7 +337,15 @@ def calculate_final_metrics(
         target_binary, final_doc, cured_binary, pixel_pitch_um
     )
     holes, hole_rows, hole_mask = hole_metrics(target_binary, final_doc, cured_binary)
+    # Evaluation only: binary desired field, with no pixel-count normalization.
+    desired_doc = target_binary.astype(float) * float(reference_final_doc)
+    doc_error = np.asarray(final_doc, dtype=float) - desired_doc
     return {
+        "desired_doc": desired_doc,
+        "final_DoC_frobenius": float(np.sqrt(np.sum(np.square(doc_error)))),
+        "target_DoC_frobenius": float(
+            np.sqrt(np.sum(np.square(doc_error[target_binary])))
+        ),
         "soft_doc": soft_doc_metrics(
             final_doc, target, reference_final_doc, target_threshold
         ),

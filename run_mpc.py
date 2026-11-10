@@ -515,6 +515,42 @@ def save_doc_frame(
     Image.fromarray(_add_pixel_scale_bar(rendered)).save(path)
 
 
+def save_final_doc_comparison(
+    desired_doc: np.ndarray,
+    final_doc: np.ndarray,
+    baseline_doc: np.ndarray | None,
+    path: Path,
+) -> None:
+    """Render evaluation fields on a shared [0, 1] scale with pixel scale bars."""
+    import matplotlib.pyplot as plt
+
+    fields = (
+        ("Desired DoC", desired_doc),
+        ("Optimized MPC final DoC", final_doc),
+        ("Absolute DoC error", np.abs(final_doc - desired_doc)),
+        ("Repeated-target baseline", baseline_doc),
+    )
+    figure, axes = plt.subplots(1, 4, figsize=(16, 5), constrained_layout=True)
+    for axis, (title, values) in zip(axes, fields):
+        axis.set_title(title)
+        axis.set_axis_off()
+        if values is None:
+            axis.text(0.5, 0.5, "Baseline disabled", ha="center", va="center",
+                      transform=axis.transAxes)
+            continue
+        rendered = np.round(np.clip(values, 0, 1) * 65535).astype(np.uint16)
+        axis.imshow(_add_pixel_scale_bar(rendered).astype(float) / 65535,
+                    cmap="gray", vmin=0, vmax=1, aspect="equal",
+                    interpolation="nearest")
+    colorbar = figure.colorbar(
+        plt.cm.ScalarMappable(norm=plt.Normalize(0, 1), cmap="gray"),
+        ax=list(axes), shrink=0.65,
+    )
+    colorbar.set_label("DoC / absolute DoC error")
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
+
+
 def _gif_frame_from_doc_png(path: Path) -> Image.Image:
     """Convert a 16-bit normalized DoC PNG to a fixed grayscale GIF palette."""
 
@@ -1432,6 +1468,8 @@ def run_unoptimized_target_mask_baseline(
     metrics_document = {
         "schema_version": 1,
         "label": baseline_label,
+        "baseline_final_DoC_frobenius": final_metrics["final_DoC_frobenius"],
+        "target_DoC_frobenius": final_metrics["target_DoC_frobenius"],
         "optimization_performed": False,
         "control_policy": {
             "definition": "u_k(x,y) = M(x,y)",
@@ -1589,6 +1627,14 @@ def build_baseline_comparison(
     baseline_geometry = baseline.final_metrics["geometry"]
     baseline_doc_timeline = baseline.timeline
     comparison_metrics = {
+        "final_DoC_frobenius": {
+            "mpc": mpc_final_metrics["final_DoC_frobenius"],
+            "baseline": baseline.final_metrics["final_DoC_frobenius"],
+        },
+        "target_DoC_frobenius": {
+            "mpc": mpc_final_metrics["target_DoC_frobenius"],
+            "baseline": baseline.final_metrics["target_DoC_frobenius"],
+        },
         "checkpoint_mean_doc": {
             "mpc": mpc_checkpoint_mean_doc,
             "baseline": baseline_checkpoint_mean_doc,
@@ -1651,6 +1697,8 @@ def print_baseline_comparison(comparison: dict[str, object]) -> None:
     """Print a compact MPC versus fixed-target benchmark table."""
 
     labels = {
+        "final_DoC_frobenius": "full-image DoC Frobenius",
+        "target_DoC_frobenius": "target-only DoC Frobenius",
         "checkpoint_mean_doc": "checkpoint mean DoC",
         "checkpoint_absolute_error": "checkpoint abs error",
         "tracking_doc_rmse": "tracking DoC RMSE",
@@ -2614,6 +2662,8 @@ def print_metrics_summary(
         print(f"tracking MAE:              {tracking['mae']:.6f}")
         print(f"maximum absolute error:    {tracking['max_absolute_error']:.6f}")
     print("\n=== Final DoC ===")
+    print(f"full-image DoC Frobenius:  {final_metrics['final_DoC_frobenius']:.6f}")
+    print(f"target-only DoC Frobenius: {final_metrics['target_DoC_frobenius']:.6f}")
     print(f"reference final DoC:       {reference_final_doc:.6f}")
     print(f"mean target DoC:           {target_mean_doc:.6f}")
     print(f"min target DoC:            {target_min_doc:.6f}")
@@ -3938,6 +3988,15 @@ def run_demo(args: argparse.Namespace) -> None:
             + "\n",
             encoding="utf-8",
         )
+    # Reporting only: save exactly the desired field used by the metric.
+    np.save(args.output_dir / "desired_doc_native.npy", final_metrics["desired_doc"])
+    save_final_doc_comparison(
+        final_metrics["desired_doc"],
+        native_state.doc.detach().cpu().numpy(),
+        None if baseline_result is None
+        else baseline_result.final_state.doc.detach().cpu().numpy(),
+        args.output_dir / "final_doc_comparison.png",
+    )
     component_metrics_path = args.output_dir / "component_metrics.csv"
     save_component_metrics_csv(final_metrics["component_rows"], component_metrics_path)
     if args.tracking_mode == "curve":
@@ -4193,6 +4252,21 @@ def run_demo(args: argparse.Namespace) -> None:
         "boundary": final_metrics["boundary"],
         "components": components_summary,
         "holes": holes_summary,
+        "final_DoC_frobenius": final_metrics["final_DoC_frobenius"],
+        "baseline_final_DoC_frobenius": (
+            None if baseline_result is None
+            else baseline_result.final_metrics["final_DoC_frobenius"]
+        ),
+        "target_DoC_frobenius": final_metrics["target_DoC_frobenius"],
+        "doc_frobenius_definition": {
+            "formula": "sqrt(sum((D_pred - D_des)**2))",
+            "desired_field": "D_des = reference_final_doc * (target > target_threshold)",
+            "reference_final_doc": reference_final_doc,
+            "target_threshold": args.target_threshold,
+            "domain": "full native image; no normalization or clipping",
+            "desired_field_path": "desired_doc_native.npy",
+            "comparison_image_path": "final_doc_comparison.png",
+        },
         "baseline_comparison": baseline_comparison,
         "outside_oxygen_diagnostics": outside_diagnostic_metadata,
         "outside_o2_protection": outside_o2_loss_metadata,
